@@ -31,4 +31,17 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'mercadopago' => [
+        'access_token' => env('MP_ACCESS_TOKEN'),
+    ],
+
+    'paljet' => [
+        'base_url' => env('PALJET_BASE_URL'),
+        'emp_id'   => env('PALJET_EMP_ID'),
+        'user'     => env('PALJET_USER'),
+        'pass'     => env('PALJET_PASS'),
+        'timeout'  => env('PALJET_TIMEOUT', 30),
+    ],
+
+
 ];

@@ -12,7 +12,7 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+     $schedule->command('paljet:sync-articulos --size=200 --pages=5 --start=0')->hourly();
     }
 
     /**
@@ -24,4 +24,6 @@ class Kernel extends ConsoleKernel
 
         require base_path('routes/console.php');
     }
+
+    
 }
