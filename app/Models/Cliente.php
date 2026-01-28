@@ -2,38 +2,63 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class Cliente extends Model
+class Cliente extends Authenticatable
 {
+    use HasFactory, Notifiable;
+
     protected $table = 'clientes';
-    public $timestamps = true;
 
     protected $fillable = [
         'nombre',
         'apellido',
         'email',
+        'password',
         'telefono',
-        'password_hash',
+        'dni',
+        'cuit',
+        'condicion_iva',
+        'nombre_empresa',
+        'direccion_calle',
+        'direccion_numero',
+        'direccion_piso',
+        'direccion_depto',
+        'direccion_localidad',
+        'direccion_provincia',
+        'direccion_codigo_postal',
         'activo',
-        'email_verificado_en',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
     ];
 
     protected $casts = [
-        'activo' => 'bool',
-        'email_verificado_en' => 'datetime',
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
+        'activo' => 'boolean',
     ];
 
     /* ================== RELACIONES ================== */
-
-    public function direcciones(): HasMany
-    {
-        return $this->hasMany(Direccion::class, 'cliente_id');
-    }
 
     public function pedidos(): HasMany
     {
         return $this->hasMany(Pedido::class, 'cliente_id');
     }
+
+    // Nota: La relación con 'direcciones' puede ser eliminada si
+    // decidimos mantener solo la dirección principal en la tabla de clientes.
+    // Si quieres múltiples direcciones por cliente, la mantenemos.
+    // Por ahora, la comentaré para simplificar.
+    /*
+    public function direcciones(): HasMany
+    {
+        return $this->hasMany(Direccion::class, 'cliente_id');
+    }
+    */
 }

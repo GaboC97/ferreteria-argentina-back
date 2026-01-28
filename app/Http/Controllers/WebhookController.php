@@ -8,7 +8,7 @@ use App\Models\ReservaStock;
 use App\Models\StockSucursal;
 use App\Models\Webhook;
 use App\Services\ContenedorReservaService;
-
+use App\Services\PaljetService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,6 +18,43 @@ class WebhookController extends Controller
 {
     public function mercadoPago(Request $request)
     {
+        // 1. VERIFICACIÓN DE FIRMA (SEGURIDAD)
+        $secret = config('services.mercadopago.webhook_secret');
+        // Solo validamos si el secret está configurado
+        if (!empty($secret)) {
+            $signature = $request->header('x-signature');
+            $requestId = $request->header('x-request-id');
+
+            if (!$signature || !$requestId) {
+                Log::warning('MP Webhook: Petición sin firma o ID de request.');
+                return response()->json(['error' => 'Signature or Request ID missing'], 400);
+            }
+
+            // El payload que se usa para la firma es el body crudo
+            $payload = $request->getContent();
+            $template = "id:{$request->input('data.id')};request-id:{$requestId};ts:" . time() . ";";
+
+            // MercadoPago cambió su firma y ya no usan ts o el manifest. La firma v1 es más simple.
+            // Creamos el HMAC usando el request-id y el payload.
+            $hmac = hash_hmac('sha256', "{$requestId}.{$payload}", $secret);
+            
+            // Separamos la firma recibida
+            $parts = explode(',', $signature);
+            $receivedHash = '';
+            foreach($parts as $part){
+                if(strpos($part, 'v1=') === 0){
+                    $receivedHash = substr($part, 3);
+                    break;
+                }
+            }
+            
+            if (!hash_equals($hmac, $receivedHash)) {
+                Log::warning('Intento de webhook de Mercado Pago con firma inválida.', ['signature' => $signature, 'id' => $requestId]);
+                return response()->json(['error' => 'Invalid signature'], 400);
+            }
+        }
+
+
         $payload = [
             'query'   => $request->query(),
             'body'    => $request->all(),
@@ -47,7 +84,6 @@ class WebhookController extends Controller
                 throw new \Exception('MP_ACCESS_TOKEN no configurado');
             }
 
-            // MP puede mandar "type=payment" (body) o "topic=payment" (query)
             if ($topic === 'payment' || $request->input('type') === 'payment') {
                 $paymentId = $externalId ?: data_get($request->all(), 'data.id');
 
@@ -60,7 +96,6 @@ class WebhookController extends Controller
                 return $this->processPayment($payment, $webhook);
             }
 
-            // A veces llega merchant_order: traemos sus payments y procesamos
             if ($topic === 'merchant_order') {
                 $merchantOrderId = $externalId ?: data_get($request->all(), 'data.id');
 
@@ -98,14 +133,9 @@ class WebhookController extends Controller
                 'trace'      => $e->getTraceAsString(),
                 'webhook_id' => $webhook->id,
             ]);
-
-            // Mercado Pago reintenta si devolvés 500; pero igual suele reintentar aunque sea 200.
-            // Mantenemos 200 para no entrar en bucle de reintentos mientras debuggeás.
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 200);
         }
     }
-
-    /* ===================== MP API HELPERS ===================== */
 
     private function mpGetPayment(string $paymentId, string $token): array
     {
@@ -133,8 +163,6 @@ class WebhookController extends Controller
         return $resp->json();
     }
 
-    /* ===================== PROCESS LOGIC ===================== */
-
     private function processPayment(array $payment, Webhook $webhook, bool $silent = false)
     {
         $paymentId       = (string) data_get($payment, 'id');
@@ -145,7 +173,6 @@ class WebhookController extends Controller
         $pagoId   = data_get($payment, 'metadata.pago_id');
         $pedidoId = data_get($payment, 'metadata.pedido_id');
 
-        // Fallback: Checkout Pro muchas veces trae external_reference = pedido_id
         if (!$pedidoId) {
             $pedidoId = data_get($payment, 'external_reference');
         }
@@ -180,7 +207,6 @@ class WebhookController extends Controller
                 throw new \Exception("No se encontró pago para pedido_id={$pedido->id}");
             }
 
-            // ✅ Guardamos estado MP siempre (aunque no apliquemos efectos de negocio)
             $nuevoEstadoPago = $this->mapMpStatusToPagoEstado($status);
 
             $pago->mp_payment_id        = $paymentId ?: $pago->mp_payment_id;
@@ -197,37 +223,27 @@ class WebhookController extends Controller
 
             $pago->save();
 
-            // ============================================================
-            // ✅ IDEMPOTENCIA DE NEGOCIO
-            // Si el pedido ya está pagado, NO volvemos a descontar stock
-            // ni a confirmar reservas.
-            // ============================================================
             if ($nuevoEstadoPago === 'aprobado') {
 
                 if ($pedido->estado === 'pagado') {
-                    // Ya aplicado antes => no repetir efectos
                     $webhook->procesado = 1;
                     $webhook->procesado_en = now();
                     $webhook->save();
                     return;
                 }
 
-                // 1) Pedido pagado
                 $pedido->estado = 'pagado';
                 $pedido->save();
 
-                // 2) Confirmar reservas operativas de contenedor
                 try {
                     app(ContenedorReservaService::class)->confirmarPorPedido($pedido->id);
                 } catch (\Throwable $e) {
-                    // No tiramos abajo el webhook por un tema operativo
                     Log::error("Error confirmando reserva contenedor", [
                         'pedido_id' => $pedido->id,
                         'error' => $e->getMessage(),
                     ]);
                 }
 
-                // 3) Confirmar reservas de stock (y descontar stock_sucursal)
                 $reservas = ReservaStock::lockForUpdate()
                     ->where('pedido_id', $pedido->id)
                     ->where('estado', 'activa')
@@ -240,24 +256,12 @@ class WebhookController extends Controller
                         ->first();
 
                     if (!$stock) {
-                        Log::error("Falta stock_sucursal al confirmar", [
-                            'pedido_id'   => $pedido->id,
-                            'producto_id' => $reserva->producto_id,
-                            'sucursal_id' => $reserva->sucursal_id,
-                        ]);
-                        // No cortamos todo el webhook
+                        Log::error("Falta stock_sucursal al confirmar", ['pedido_id' => $pedido->id, 'producto_id' => $reserva->producto_id, 'sucursal_id' => $reserva->sucursal_id]);
                         continue;
                     }
 
                     if ((int)$stock->cantidad < (int)$reserva->cantidad) {
-                        Log::error("Stock insuficiente al confirmar (inconsistencia)", [
-                            'pedido_id'   => $pedido->id,
-                            'producto_id' => $reserva->producto_id,
-                            'sucursal_id' => $reserva->sucursal_id,
-                            'stock'       => (int)$stock->cantidad,
-                            'reserva'     => (int)$reserva->cantidad,
-                        ]);
-                        // No cortamos todo el webhook
+                        Log::error("Stock insuficiente al confirmar (inconsistencia)", ['pedido_id' => $pedido->id, 'producto_id' => $reserva->producto_id, 'sucursal_id' => $reserva->sucursal_id, 'stock' => (int)$stock->cantidad, 'reserva' => (int)$reserva->cantidad]);
                         continue;
                     }
 
@@ -267,9 +271,18 @@ class WebhookController extends Controller
                     $reserva->estado = 'confirmada';
                     $reserva->save();
                 }
+                
+                // 🔥 GENERAR FACTURA EN PALJET
+                try {
+                    $paljetService = app(PaljetService::class);
+                    $paljetService->generarFacturaDePedido($pedido);
+                } catch (\Throwable $e) {
+                    Log::error("Fallo al generar la factura en Paljet para el pedido {$pedido->id}", [
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
-            // ❌ RECHAZADO / CANCELADO (liberar reservas + marcar pedido fallido)
             if (in_array($nuevoEstadoPago, ['rechazado', 'cancelado'], true)) {
 
                 if ($pedido->estado !== 'fallido') {
