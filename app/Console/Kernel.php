@@ -13,6 +13,7 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule): void
     {
      $schedule->command('paljet:sync-articulos --size=200 --pages=5 --start=0')->hourly();
+     $schedule->command('reservas:expirar')->everyMinute();
     }
 
     /**

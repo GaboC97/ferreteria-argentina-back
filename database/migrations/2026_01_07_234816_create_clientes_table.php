@@ -4,19 +4,22 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('clientes', function (Blueprint $table) {
             $table->id();
 
-            // Datos personales y de la cuenta
+            $table->foreignId('user_id')
+                ->unique()
+                ->constrained('users')
+                ->cascadeOnDelete();
+
+            // Datos personales
             $table->string('nombre', 120);
             $table->string('apellido', 120);
             $table->string('email', 160)->unique();
-            $table->timestamp('email_verified_at')->nullable();
-            $table->string('password')->nullable(); // Nullable para permitir creación sin cuenta inicial
-            $table->rememberToken();
 
             // Datos de contacto
             $table->string('telefono', 40)->nullable();
@@ -27,7 +30,7 @@ return new class extends Migration {
             $table->string('condicion_iva', 80)->nullable();
             $table->string('nombre_empresa', 160)->nullable();
 
-            // Dirección de Facturación/Envío principal
+            // Direccion principal
             $table->string('direccion_calle', 160)->nullable();
             $table->string('direccion_numero', 20)->nullable();
             $table->string('direccion_piso', 20)->nullable();

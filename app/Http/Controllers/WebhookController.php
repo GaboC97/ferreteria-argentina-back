@@ -2,64 +2,62 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\PedidoConfirmadoAdmin;
+use App\Mail\PedidoConfirmadoCliente;
+use App\Mail\ContenedorReservaConfirmadaAdmin;
+use App\Mail\ContenedorReservaConfirmadaCliente;
 use App\Models\Pago;
 use App\Models\Pedido;
 use App\Models\ReservaStock;
 use App\Models\StockSucursal;
+use App\Models\ContenedorReserva;
+use App\Models\Producto;
 use App\Models\Webhook;
 use App\Services\ContenedorReservaService;
 use App\Services\PaljetService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 
 class WebhookController extends Controller
 {
     public function mercadoPago(Request $request)
     {
-        // 1. VERIFICACIÓN DE FIRMA (SEGURIDAD)
+        // 1) Verificación firma (la dejo igual como la tenías)
         $secret = config('services.mercadopago.webhook_secret');
-        // Solo validamos si el secret está configurado
         if (!empty($secret)) {
             $signature = $request->header('x-signature');
-            $requestId = $request->header('x-request-id');
+            $requestId  = $request->header('x-request-id');
 
             if (!$signature || !$requestId) {
                 Log::warning('MP Webhook: Petición sin firma o ID de request.');
                 return response()->json(['error' => 'Signature or Request ID missing'], 400);
             }
 
-            // El payload que se usa para la firma es el body crudo
             $payload = $request->getContent();
-            $template = "id:{$request->input('data.id')};request-id:{$requestId};ts:" . time() . ";";
-
-            // MercadoPago cambió su firma y ya no usan ts o el manifest. La firma v1 es más simple.
-            // Creamos el HMAC usando el request-id y el payload.
             $hmac = hash_hmac('sha256', "{$requestId}.{$payload}", $secret);
-            
-            // Separamos la firma recibida
+
             $parts = explode(',', $signature);
             $receivedHash = '';
-            foreach($parts as $part){
-                if(strpos($part, 'v1=') === 0){
+            foreach ($parts as $part) {
+                $part = trim($part);
+                if (strpos($part, 'v1=') === 0) {
                     $receivedHash = substr($part, 3);
                     break;
                 }
             }
-            
+
             if (!hash_equals($hmac, $receivedHash)) {
-                Log::warning('Intento de webhook de Mercado Pago con firma inválida.', ['signature' => $signature, 'id' => $requestId]);
+                Log::warning('Intento de webhook de Mercado Pago con firma inválida.', [
+                    'signature' => $signature,
+                    'id' => $requestId
+                ]);
                 return response()->json(['error' => 'Invalid signature'], 400);
             }
         }
 
-
-        $payload = [
-            'query'   => $request->query(),
-            'body'    => $request->all(),
-            'headers' => $request->headers->all(),
-        ];
 
         $topic = $request->query('topic') ?? $request->input('type') ?? $request->query('type');
         $event = $request->query('type') ?? $request->input('action') ?? $request->query('action');
@@ -73,7 +71,6 @@ class WebhookController extends Controller
             'proveedor'    => 'mercadopago',
             'evento'       => (string)($topic ?: $event ?: 'unknown'),
             'external_id'  => $externalId ? (string)$externalId : null,
-            'payload_json' => $payload,
             'procesado'    => 0,
             'procesado_en' => null,
         ]);
@@ -126,7 +123,6 @@ class WebhookController extends Controller
 
             $webhook->update(['procesado' => 1, 'procesado_en' => now()]);
             return response()->json(['ok' => true, 'note' => 'topic not handled'], 200);
-
         } catch (\Throwable $e) {
             Log::error('MP WEBHOOK ERROR', [
                 'error'      => $e->getMessage(),
@@ -163,159 +159,339 @@ class WebhookController extends Controller
         return $resp->json();
     }
 
-    private function processPayment(array $payment, Webhook $webhook, bool $silent = false)
-    {
-        $paymentId       = (string) data_get($payment, 'id');
-        $status          = (string) data_get($payment, 'status');
-        $statusDetail    = (string) data_get($payment, 'status_detail');
-        $merchantOrderId = data_get($payment, 'order.id') ? (string) data_get($payment, 'order.id') : null;
+private function processPayment(array $payment, Webhook $webhook, bool $silent = false)
+{
+    // 1. Extracción de datos
+    $paymentId       = (string) data_get($payment, 'id');
+    $status          = (string) data_get($payment, 'status');
+    $statusDetail    = (string) data_get($payment, 'status_detail');
+    $merchantOrderId = data_get($payment, 'order.id') ? (string) data_get($payment, 'order.id') : null;
 
-        $pagoId   = data_get($payment, 'metadata.pago_id');
-        $pedidoId = data_get($payment, 'metadata.pedido_id');
+    $pagoId   = data_get($payment, 'metadata.pago_id');
+    $pedidoId = data_get($payment, 'metadata.pedido_id') ?: data_get($payment, 'external_reference');
 
-        if (!$pedidoId) {
-            $pedidoId = data_get($payment, 'external_reference');
+    // 2. Validación básica
+    if (!$pedidoId) {
+        $webhook->update(['procesado' => 1, 'procesado_en' => now()]);
+        if ($silent) return null;
+        return response()->json(['ok' => true, 'note' => 'no pedido_id in payment'], 200);
+    }
+
+    // 3. Transacción DB
+    DB::transaction(function () use (
+        $pedidoId,
+        $pagoId,
+        $paymentId,
+        $status,
+        $statusDetail,
+        $merchantOrderId,
+        $payment,
+        $webhook
+    ) {
+        /** @var Pedido $pedido */
+        $pedido = Pedido::lockForUpdate()->findOrFail((int)$pedidoId);
+
+        /** @var Pago|null $pago */
+        $pago = null;
+
+        // Buscar Pago existente o el último asociado
+        if ($pagoId) {
+            $pago = Pago::lockForUpdate()->find((int)$pagoId);
         }
 
-        if (!$pedidoId) {
-            $webhook->update(['procesado' => 1, 'procesado_en' => now()]);
-            if ($silent) return null;
-            return response()->json(['ok' => true, 'note' => 'no pedido_id in payment'], 200);
+        if (!$pago) {
+            $pago = Pago::lockForUpdate()
+                ->where('pedido_id', $pedido->id)
+                ->orderByDesc('id')
+                ->first();
         }
 
-        DB::transaction(function () use (
-            $pedidoId, $pagoId, $paymentId, $status, $statusDetail, $merchantOrderId, $payment, $webhook
-        ) {
-            /** @var Pedido $pedido */
-            $pedido = Pedido::lockForUpdate()->findOrFail((int)$pedidoId);
+        if (!$pago) {
+            throw new \Exception("No se encontró pago para pedido_id={$pedido->id}");
+        }
 
-            /** @var Pago|null $pago */
-            $pago = null;
+        // Actualizar datos del Pago
+        $nuevoEstadoPago = $this->mapMpStatusToPagoEstado($status);
 
-            if ($pagoId) {
-                $pago = Pago::lockForUpdate()->find((int)$pagoId);
-            }
+        $pago->mp_payment_id        = $paymentId ?: $pago->mp_payment_id;
+        $pago->mp_merchant_order_id = $merchantOrderId;
+        $pago->mp_status            = $status;
+        $pago->mp_status_detail     = $statusDetail;
+        $pago->mp_raw_json          = $payment;
+        $pago->moneda               = $pago->moneda ?: (data_get($payment, 'currency_id') ?: 'ARS');
+        $pago->estado               = $nuevoEstadoPago;
 
-            if (!$pago) {
-                $pago = Pago::lockForUpdate()
-                    ->where('pedido_id', $pedido->id)
-                    ->orderByDesc('id')
-                    ->first();
-            }
+        if ($nuevoEstadoPago === 'aprobado' && !$pago->aprobado_en) {
+            $pago->aprobado_en = now();
+        }
 
-            if (!$pago) {
-                throw new \Exception("No se encontró pago para pedido_id={$pedido->id}");
-            }
+        $pago->save();
 
-            $nuevoEstadoPago = $this->mapMpStatusToPagoEstado($status);
+        // ========= SOLO SI APROBADO =========
+        if ($nuevoEstadoPago === 'aprobado') {
 
-            $pago->mp_payment_id        = $paymentId ?: $pago->mp_payment_id;
-            $pago->mp_merchant_order_id = $merchantOrderId;
-            $pago->mp_status            = $status;
-            $pago->mp_status_detail     = $statusDetail;
-            $pago->mp_raw_json          = $payment;
-            $pago->moneda               = $pago->moneda ?: (data_get($payment, 'currency_id') ?: 'ARS');
-            $pago->estado               = $nuevoEstadoPago;
+            $yaPagado = ($pedido->estado === 'pagado');
 
-            if ($nuevoEstadoPago === 'aprobado' && !$pago->aprobado_en) {
-                $pago->aprobado_en = now();
-            }
-
-            $pago->save();
-
-            if ($nuevoEstadoPago === 'aprobado') {
-
-                if ($pedido->estado === 'pagado') {
-                    $webhook->procesado = 1;
-                    $webhook->procesado_en = now();
-                    $webhook->save();
-                    return;
-                }
-
+            // ✅ A) Lógica de Negocio (Stock, Factura, Servicio Contenedor)
+            // Se ejecuta SOLO la primera vez que se aprueba
+            if (!$yaPagado) {
                 $pedido->estado = 'pagado';
                 $pedido->save();
 
+                // 1) Confirmar lógica de servicio de contenedores (Fechas, choferes, etc.)
                 try {
                     app(ContenedorReservaService::class)->confirmarPorPedido($pedido->id);
                 } catch (\Throwable $e) {
-                    Log::error("Error confirmando reserva contenedor", [
+                    Log::error("Error confirmando servicio reserva contenedor", [
                         'pedido_id' => $pedido->id,
                         'error' => $e->getMessage(),
                     ]);
                 }
 
-                $reservas = ReservaStock::lockForUpdate()
+                // 2) Descontar Stock Real (para productos físicos normales)
+                $reservasStock = ReservaStock::lockForUpdate()
                     ->where('pedido_id', $pedido->id)
                     ->where('estado', 'activa')
                     ->get();
 
-                foreach ($reservas as $reserva) {
+                foreach ($reservasStock as $rs) {
                     $stock = StockSucursal::lockForUpdate()
-                        ->where('producto_id', $reserva->producto_id)
-                        ->where('sucursal_id', $reserva->sucursal_id)
+                        ->where('producto_id', $rs->producto_id)
+                        ->where('sucursal_id', $rs->sucursal_id)
                         ->first();
 
-                    if (!$stock) {
-                        Log::error("Falta stock_sucursal al confirmar", ['pedido_id' => $pedido->id, 'producto_id' => $reserva->producto_id, 'sucursal_id' => $reserva->sucursal_id]);
-                        continue;
+                    if (!$stock) continue;
+
+                    if ((int)$stock->cantidad >= (int)$rs->cantidad) {
+                        $stock->cantidad = (int)$stock->cantidad - (int)$rs->cantidad;
+                        $stock->save();
+
+                        $rs->estado = 'confirmada';
+                        $rs->save();
+                    } else {
+                        Log::error("Stock insuficiente al confirmar", ['pedido' => $pedido->id, 'prod' => $rs->producto_id]);
                     }
-
-                    if ((int)$stock->cantidad < (int)$reserva->cantidad) {
-                        Log::error("Stock insuficiente al confirmar (inconsistencia)", ['pedido_id' => $pedido->id, 'producto_id' => $reserva->producto_id, 'sucursal_id' => $reserva->sucursal_id, 'stock' => (int)$stock->cantidad, 'reserva' => (int)$reserva->cantidad]);
-                        continue;
-                    }
-
-                    $stock->cantidad = (int)$stock->cantidad - (int)$reserva->cantidad;
-                    $stock->save();
-
-                    $reserva->estado = 'confirmada';
-                    $reserva->save();
                 }
-                
-                // 🔥 GENERAR FACTURA EN PALJET
+
+                // 3) Generar Factura en Paljet
                 try {
-                    $paljetService = app(PaljetService::class);
-                    $paljetService->generarFacturaDePedido($pedido);
+                    app(PaljetService::class)->generarFacturaDePedido($pedido);
                 } catch (\Throwable $e) {
-                    Log::error("Fallo al generar la factura en Paljet para el pedido {$pedido->id}", [
+                    Log::error("Fallo al generar factura Paljet pedido {$pedido->id}", [
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
 
-            if (in_array($nuevoEstadoPago, ['rechazado', 'cancelado'], true)) {
+            // ✅ B) Lógica de Mails (IDEMPOTENTE Y EXCLUYENTE)
+            // Esto se ejecuta siempre que el pago esté aprobado, pero los métodos internos
+            // se protegen solos contra duplicados.
+            
+            // Buscamos si hay reservas de contenedor
+            $reservasContenedor = ContenedorReserva::lockForUpdate()
+                ->where('pedido_id', $pedido->id)
+                ->get();
 
-                if ($pedido->estado !== 'fallido') {
-                    $pedido->estado = 'fallido';
-                    $pedido->save();
+            if ($reservasContenedor->isNotEmpty()) {
+                // CASO 1: Es Alquiler de Contenedor -> Solo mails de contenedor
+                foreach ($reservasContenedor as $rc) {
+                    $this->enviarMailsReservaContenedorPagada($pedido, $rc);
                 }
+            } else {
+                // CASO 2: Es Compra Normal -> Solo mail de pedido estándar
+                $this->enviarMailsPedidoPagado($pedido);
+            }
+        }
 
-                ReservaStock::where('pedido_id', $pedido->id)
-                    ->where('estado', 'activa')
-                    ->update(['estado' => 'liberada']);
+        // ========= SI RECHAZADO/CANCELADO =========
+        if (in_array($nuevoEstadoPago, ['rechazado', 'cancelado'], true)) {
+            if ($pedido->estado !== 'fallido') {
+                $pedido->estado = 'fallido';
+                $pedido->save();
+            }
 
+            // Liberar stock reservado
+            ReservaStock::where('pedido_id', $pedido->id)
+                ->where('estado', 'activa')
+                ->update(['estado' => 'liberada']);
+
+            // Cancelar servicio de contenedor
+            try {
+                app(ContenedorReservaService::class)->cancelarPorPedido($pedido->id);
+            } catch (\Throwable $e) {
+                Log::error("Error cancelando reserva contenedor", [
+                    'pedido_id' => $pedido->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Marcar webhook como procesado
+        $webhook->procesado = 1;
+        $webhook->procesado_en = now();
+        $webhook->save();
+    });
+
+    if ($silent) return null;
+
+    return response()->json([
+        'ok' => true,
+        'mp_payment_id' => $paymentId,
+        'mp_status'     => $status,
+    ], 200);
+}
+
+
+    /**
+     * ✅ ENVÍA 2 MAILS: cliente + admin. Anti-duplicados por timestamps en pedido.
+     */
+/**
+     * ✅ ENVÍA 2 MAILS: cliente + admin.
+     * SOLUCIÓN DUPLICADOS: Usamos update() con whereNull() para asegurar atomicidad.
+     */
+    private function enviarMailsPedidoPagado(Pedido $pedido): void
+    {
+        $adminEmail   = config('mail.ferreteria.notif_email');
+        $clienteEmail = $pedido->email_contacto;
+
+        if (!$adminEmail && !$clienteEmail) return;
+
+        // No necesitamos refresh ni lockForUpdate aquí si usamos la técnica de abajo
+
+        /**
+         * 1. MAIL CLIENTE
+         */
+        if ($clienteEmail) {
+            // INTENTO DE BLOQUEO:
+            // "Actualizá la fecha AHORA, pero SOLO si antes estaba NULL".
+            // Laravel nos devuelve cuántas filas modificó (1 o 0).
+            $tomado = Pedido::where('id', $pedido->id)
+                ->whereNull('email_cliente_enviado_at')
+                ->update([
+                    'email_cliente_enviado_at' => now(),
+                    'mail_cliente_error_at' => null, 
+                ]);
+
+            // Si $tomado es 1, significa que este proceso GANÓ la carrera.
+            // Si $tomado es 0, significa que otro proceso ya lo marcó, entonces no hacemos nada.
+            if ($tomado) {
                 try {
-                    app(ContenedorReservaService::class)->cancelarPorPedido($pedido->id);
+                    Mail::to($clienteEmail)->send(
+                        new PedidoConfirmadoCliente($pedido)
+                    );
                 } catch (\Throwable $e) {
-                    Log::error("Error cancelando reserva contenedor", [
-                        'pedido_id' => $pedido->id,
+                    Log::error("Error enviando mail cliente pedido {$pedido->id}", [
+                        'email' => $clienteEmail,
                         'error' => $e->getMessage(),
+                    ]);
+
+                    // Si falló el envío real (SMTP caído, etc), volvemos a poner NULL
+                    // para que se pueda reintentar en el futuro.
+                    Pedido::where('id', $pedido->id)->update([
+                        'email_cliente_enviado_at' => null, 
+                        'mail_cliente_error_at' => now(),
                     ]);
                 }
             }
+        }
 
-            $webhook->procesado = 1;
-            $webhook->procesado_en = now();
-            $webhook->save();
-        });
+        /**
+         * 2. MAIL ADMIN
+         */
+        if ($adminEmail) {
+            // Misma lógica atómica para admin
+            $tomado = Pedido::where('id', $pedido->id)
+                ->whereNull('email_admin_enviado_at')
+                ->update([
+                    'email_admin_enviado_at' => now(),
+                    'mail_admin_error_at' => null,
+                ]);
 
-        if ($silent) return null;
+            if ($tomado) {
+                try {
+                    Mail::to($adminEmail)->send(
+                        new PedidoConfirmadoAdmin($pedido)
+                    );
+                } catch (\Throwable $e) {
+                    Log::error("Error enviando mail admin pedido {$pedido->id}", [
+                        'email' => $adminEmail,
+                        'error' => $e->getMessage(),
+                    ]);
 
-        return response()->json([
-            'ok' => true,
-            'mp_payment_id' => $paymentId,
-            'mp_status'     => $status,
-        ], 200);
+                    // Rollback del timestamp
+                    Pedido::where('id', $pedido->id)->update([
+                        'email_admin_enviado_at' => null,
+                        'mail_admin_error_at' => now(),
+                    ]);
+                }
+            }
+        }
+    }
+
+    /**
+     * ✅ Lógica idéntica para Reservas
+     */
+    private function enviarMailsReservaContenedorPagada(Pedido $pedido, ContenedorReserva $reserva): void
+    {
+        $adminEmail   = config('mail.ferreteria.notif_email');
+        $clienteEmail = $pedido->email_contacto;
+
+        if (!$adminEmail && !$clienteEmail) return;
+
+        // Nombre del producto (opcional)
+        $productoNombre = null;
+        try {
+            $productoNombre = Producto::find($reserva->producto_id)?->nombre;
+        } catch (\Throwable $e) {}
+
+        // ✅ Cliente
+        if ($clienteEmail) {
+            $tomado = ContenedorReserva::where('id', $reserva->id)
+                ->whereNull('email_enviado_at')
+                ->update(['email_enviado_at' => now()]);
+
+            if ($tomado) {
+                try {
+                    Mail::to($clienteEmail)->send(
+                        new ContenedorReservaConfirmadaCliente($pedido, $reserva, $productoNombre)
+                    );
+                } catch (\Throwable $e) {
+                    Log::error("Error enviando mail cliente reserva contenedor {$reserva->id}", [
+                        'email' => $clienteEmail,
+                        'error' => $e->getMessage(),
+                    ]);
+                    
+                    // Rollback
+                    ContenedorReserva::where('id', $reserva->id)
+                        ->update(['email_enviado_at' => null]);
+                }
+            }
+        }
+
+        // ✅ Admin
+        if ($adminEmail) {
+            // Asegurate que tu tabla tenga la columna email_admin_enviado_at
+            $tomado = ContenedorReserva::where('id', $reserva->id)
+                ->whereNull('email_admin_enviado_at')
+                ->update(['email_admin_enviado_at' => now()]);
+
+            if ($tomado) {
+                try {
+                    Mail::to($adminEmail)->send(
+                        new ContenedorReservaConfirmadaAdmin($pedido, $reserva, $productoNombre)
+                    );
+                } catch (\Throwable $e) {
+                    Log::error("Error enviando mail admin reserva contenedor {$reserva->id}", [
+                        'email' => $adminEmail,
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    // Rollback
+                    ContenedorReserva::where('id', $reserva->id)
+                        ->update(['email_admin_enviado_at' => null]);
+                }
+            }
+        }
     }
 
     private function mapMpStatusToPagoEstado(string $mpStatus): string

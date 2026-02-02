@@ -14,6 +14,7 @@ class Cliente extends Authenticatable
     protected $table = 'clientes';
 
     protected $fillable = [
+        'user_id',
         'nombre',
         'apellido',
         'email',
@@ -61,4 +62,10 @@ class Cliente extends Authenticatable
         return $this->hasMany(Direccion::class, 'cliente_id');
     }
     */
+
+    public function user()
+{
+    return $this->belongsTo(\App\Models\User::class);
+}
+
 }

@@ -13,12 +13,12 @@ class Producto extends Model
 
     protected $fillable = [
         'categoria_id',
+        'marca_id',
         'nombre',
         'slug',
         'codigo',
         'descripcion',
         'precio',
-        'marca',
         'unidad',
         'activo',
         'destacado',
@@ -49,5 +49,10 @@ class Producto extends Model
     {
         return $this->hasMany(\App\Models\ProductoSpec::class, 'producto_id')
             ->orderBy('orden');
+    }
+
+    public function marca()
+    {
+        return $this->belongsTo(Marca::class);
     }
 }

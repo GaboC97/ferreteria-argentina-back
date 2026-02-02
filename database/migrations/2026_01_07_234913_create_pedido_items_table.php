@@ -4,7 +4,8 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('pedido_items', function (Blueprint $table) {
@@ -22,8 +23,10 @@ return new class extends Migration {
             $table->string('nombre_producto', 180);
             $table->decimal('precio_unitario', 12, 2);
             $table->integer('cantidad');
-
             $table->decimal('subtotal', 12, 2);
+
+            // Metadata (contenedor u otros servicios)
+            $table->json('extras')->nullable();
 
             $table->timestamps();
 

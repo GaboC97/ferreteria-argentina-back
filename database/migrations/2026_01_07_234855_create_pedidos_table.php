@@ -4,31 +4,29 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         Schema::create('pedidos', function (Blueprint $table) {
             $table->id();
 
-            // Cliente opcional (guest checkout permitido)
             $table->foreignId('cliente_id')->nullable()
                 ->constrained('clientes')
                 ->nullOnDelete();
 
-            // Sucursal elegida (de donde se descuenta stock; para retiro es la misma)
             $table->foreignId('sucursal_id')
                 ->constrained('sucursales')
                 ->restrictOnDelete();
 
-            // Retiro o envío
             $table->enum('tipo_entrega', ['retiro_sucursal', 'envio'])->default('retiro_sucursal');
 
-            // Snapshot de contacto (siempre lo guardamos para que el pedido sea consistente)
+            // Snapshot de contacto
             $table->string('nombre_contacto', 160);
             $table->string('email_contacto', 160);
             $table->string('telefono_contacto', 40)->nullable();
 
-            // Estado del pedido (independiente del pago)
+            // Estado del pedido
             $table->enum('estado', [
                 'borrador',
                 'pendiente_pago',
@@ -38,7 +36,7 @@ return new class extends Migration {
                 'enviado',
                 'entregado',
                 'cancelado',
-                'fallido'
+                'fallido',
             ])->default('pendiente_pago');
 
             // Totales
@@ -47,11 +45,22 @@ return new class extends Migration {
             $table->decimal('total_final', 12, 2)->default(0);
             $table->string('moneda', 3)->default('ARS');
 
-            // Notas internas / del cliente
+            // Notas
             $table->string('nota_cliente', 255)->nullable();
             $table->string('nota_interna', 255)->nullable();
 
+            // Comprobante transferencia
+            $table->string('comprobante_path', 255)->nullable();
+
             $table->timestamps();
+
+            // Emails de notificacion
+            $table->timestamp('mail_cliente_enviado_en')->nullable();
+            $table->timestamp('mail_admin_enviado_en')->nullable();
+            $table->timestamp('email_cliente_enviado_at')->nullable();
+            $table->timestamp('email_admin_enviado_at')->nullable();
+            $table->timestamp('mail_cliente_error_at')->nullable();
+            $table->timestamp('mail_admin_error_at')->nullable();
 
             $table->index(['cliente_id', 'estado']);
             $table->index(['sucursal_id', 'tipo_entrega']);

@@ -1,0 +1,12 @@
+RewriteEngine On
+
+# Si es un archivo o carpeta real, lo sirve directo
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Si empieza con /api, lo mandamos a Laravel
+RewriteRule ^api/(.*)$ backend/public/api/$1 [L,NC]
+
+# Todo lo demás va a index.html (Vue SPA)
+RewriteRule ^ index.html [L]
