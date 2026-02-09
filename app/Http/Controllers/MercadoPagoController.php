@@ -25,12 +25,12 @@ class MercadoPagoController extends Controller
     {
         $data = $request->validate([
             'pedido_id' => ['required', 'integer'],
+            'access_token' => ['nullable', 'string', 'uuid'],
         ]);
 
         $pedidoId = (int) $data['pedido_id'];
 
-        $pedido = DB::table('pedidos')->where('id', $pedidoId)->first();
-        if (!$pedido) return response()->json(['message' => 'Pedido no encontrado'], 404);
+        $pedido = Pedido::findAuthorizedOrFail($pedidoId, $request);
 
         if ($pedido->estado !== 'pendiente_pago') {
             return response()->json(['message' => 'El pedido no está en estado pendiente_pago'], 409);
@@ -353,15 +353,13 @@ class MercadoPagoController extends Controller
     {
         $data = $request->validate([
             'pedido_id' => ['required', 'integer'],
+            'access_token' => ['nullable', 'string', 'uuid'],
         ]);
 
         $pedidoId = (int) $data['pedido_id'];
 
-        // 1. Buscar pedido local
-        $pedido = DB::table('pedidos')->where('id', $pedidoId)->first();
-        if (!$pedido) {
-            return response()->json(['message' => 'Pedido no encontrado'], 404);
-        }
+        // 1. Buscar pedido local (con autorización)
+        $pedido = Pedido::findAuthorizedOrFail($pedidoId, $request);
 
         // 2. Si YA está pagado en nuestra BD, retornamos éxito rápido (Fast Path)
         if ($pedido->estado === 'pagado') {
@@ -516,7 +514,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
 
     private function enviarMailsPedidoPagado(Pedido $pedido): void
     {
-        $adminEmail  = config('mail.ferreteria.notif_email') ?? 'gabrielcarbone97@gmail.com'; 
+        $adminEmail  = config('mail.ferreteria.notif_email'); 
         $clienteEmail = $pedido->email_contacto;
 
         // 1. Cliente
@@ -554,7 +552,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
 
     private function enviarMailsReservaContenedorPagada(Pedido $pedido, ContenedorReserva $reserva): void
     {
-        $adminEmail  = config('mail.ferreteria.notif_email') ?? 'gabrielcarbone97@gmail.com';
+        $adminEmail  = config('mail.ferreteria.notif_email');
         $clienteEmail = $pedido->email_contacto;
         $productoNombre = Producto::find($reserva->producto_id)?->nombre;
 

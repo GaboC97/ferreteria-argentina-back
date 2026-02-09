@@ -68,4 +68,10 @@ class Cliente extends Authenticatable
     return $this->belongsTo(\App\Models\User::class);
 }
 
+public function direcciones()
+{
+    return $this->hasMany(Direccion::class, 'cliente_id');
+}
+
+
 }

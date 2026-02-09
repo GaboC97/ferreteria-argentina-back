@@ -9,13 +9,14 @@ use Illuminate\Http\Request;
 
 class ProductoController extends Controller
 {
-    // GET /api/productos
+// GET /api/productos
 public function index(Request $request)
 {
     $q = Producto::query()
         ->where('activo', true)
-        ->with(['imagenes', 'categoria', 'specs']); // si no tenés la tabla aún, podés sacar esto
+        ->with(['imagenes', 'categoria', 'specs']);
 
+    // Búsqueda por texto
     if ($search = trim((string) $request->query('q'))) {
         $q->where(function ($sub) use ($search) {
             $sub->where('nombre', 'like', "%{$search}%")
@@ -24,25 +25,26 @@ public function index(Request $request)
         });
     }
 
-if ($categoriaId = $request->query('categoria_id')) {
-    $q->where('categoria_id', (int) $categoriaId);
-}
-
-
-    if ($request->boolean('destacado')) {
-        $q->where('destacado', true);
+    // Filtro por categoría
+    if ($categoriaId = $request->query('categoria_id')) {
+        $q->where('categoria_id', (int) $categoriaId);
     }
 
+    // ✅ Filtro por EN OFERTA (reemplaza el de destacado)
+    if ($request->has('en_oferta')) {
+        $q->where('en_oferta', $request->boolean('en_oferta'));
+    }
 
+    // Filtro por marcas
     if ($marcas = $request->input('marcas')) {
-    $marcas = is_array($marcas) ? $marcas : explode(',', (string)$marcas);
+        $marcas = is_array($marcas) ? $marcas : explode(',', (string)$marcas);
 
-    $q->whereHas('marca', function($sub) use ($marcas) {
-        $sub->whereIn('nombre', $marcas);
-    });
-}
+        $q->whereHas('marca', function($sub) use ($marcas) {
+            $sub->whereIn('nombre', $marcas);
+        });
+    }
 
-
+    // Ordenamiento
     $sort = $request->query('sort', 'nombre');
     $dir  = $request->query('dir', 'asc');
     if (!in_array($sort, ['nombre', 'precio', 'created_at'], true)) $sort = 'nombre';
@@ -50,14 +52,15 @@ if ($categoriaId = $request->query('categoria_id')) {
 
     $q->orderBy($sort, $dir);
 
+    // Paginación
     $perPage = (int) $request->query('per_page', 12);
     $perPage = max(1, min($perPage, 50));
 
     return ProductoResource::collection(
-    $q->paginate($perPage)->appends($request->query())
-);
-
+        $q->paginate($perPage)->appends($request->query())
+    );
 }
+
 
 
 public function show(string $slug)

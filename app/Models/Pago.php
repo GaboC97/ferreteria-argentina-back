@@ -21,12 +21,18 @@ class Pago extends Model
         'mp_status_detail',
         'mp_raw_json',
         'aprobado_en',
+        'mp_refund_id',
+        'refund_monto',
+        'refund_status',
+        'devuelto_en',
     ];
 
     protected $casts = [
-        'monto'        => 'decimal:2',
-        'mp_raw_json'  => 'array',
-        'aprobado_en'  => 'datetime',
+        'monto'         => 'decimal:2',
+        'refund_monto'  => 'decimal:2',
+        'mp_raw_json'   => 'array',
+        'aprobado_en'   => 'datetime',
+        'devuelto_en'   => 'datetime',
     ];
 
     /* ================== RELACIONES ================== */

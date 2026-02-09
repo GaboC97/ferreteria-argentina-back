@@ -22,12 +22,14 @@ class Producto extends Model
         'unidad',
         'activo',
         'destacado',
+        'en_oferta',
     ];
 
     protected $casts = [
         'precio' => 'decimal:2',
         'activo' => 'bool',
         'destacado' => 'bool',
+        'en_oferta' => 'bool',
     ];
 
     public function categoria(): BelongsTo

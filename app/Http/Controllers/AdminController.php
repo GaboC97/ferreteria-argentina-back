@@ -152,7 +152,7 @@ class AdminController extends Controller
             });
         }
 
-        $perPage = $request->get('per_page', 15);
+        $perPage = min((int) $request->get('per_page', 15), 100);
         $clientes = $query->paginate($perPage);
 
         return response()->json($clientes, 200);
@@ -187,7 +187,7 @@ class AdminController extends Controller
             });
         }
 
-        $perPage = $request->get('per_page', 15);
+        $perPage = min((int) $request->get('per_page', 15), 100);
         $productos = $query->paginate($perPage);
 
         return response()->json($productos, 200);

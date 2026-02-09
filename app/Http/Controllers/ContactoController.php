@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\ContactoMail;
 
@@ -18,7 +19,14 @@ class ContactoController extends Controller
             'mensaje' => ['required', 'string', 'max:2000'],
         ]);
 
-        $adminEmail = config('mail.ferreteria.notif_email', 'gabrielcarbone97@gmail.com');
+        $adminEmail = config('mail.ferreteria.notif_email');
+
+        if (!$adminEmail) {
+            Log::warning('ContactoController: mail.ferreteria.notif_email no configurado.');
+            return response()->json([
+                'message' => 'Tu mensaje fue enviado correctamente. Te responderemos a la brevedad.',
+            ], 200);
+        }
 
         Mail::to($adminEmail)->send(new ContactoMail($data));
 

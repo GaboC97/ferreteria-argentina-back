@@ -25,37 +25,40 @@ class WebhookController extends Controller
 {
     public function mercadoPago(Request $request)
     {
-        // 1) Verificación firma (la dejo igual como la tenías)
+        // 1) Verificación de firma OBLIGATORIA
         $secret = config('services.mercadopago.webhook_secret');
-        if (!empty($secret)) {
-            $signature = $request->header('x-signature');
-            $requestId  = $request->header('x-request-id');
+        if (empty($secret)) {
+            Log::error('MP Webhook: MP_WEBHOOK_SECRET no configurado. Rechazando webhook.');
+            return response()->json(['error' => 'Webhook not configured'], 500);
+        }
 
-            if (!$signature || !$requestId) {
-                Log::warning('MP Webhook: Petición sin firma o ID de request.');
-                return response()->json(['error' => 'Signature or Request ID missing'], 400);
+        $signature = $request->header('x-signature');
+        $requestId  = $request->header('x-request-id');
+
+        if (!$signature || !$requestId) {
+            Log::warning('MP Webhook: Petición sin firma o ID de request.');
+            return response()->json(['error' => 'Signature or Request ID missing'], 400);
+        }
+
+        $payload = $request->getContent();
+        $hmac = hash_hmac('sha256', "{$requestId}.{$payload}", $secret);
+
+        $parts = explode(',', $signature);
+        $receivedHash = '';
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if (strpos($part, 'v1=') === 0) {
+                $receivedHash = substr($part, 3);
+                break;
             }
+        }
 
-            $payload = $request->getContent();
-            $hmac = hash_hmac('sha256', "{$requestId}.{$payload}", $secret);
-
-            $parts = explode(',', $signature);
-            $receivedHash = '';
-            foreach ($parts as $part) {
-                $part = trim($part);
-                if (strpos($part, 'v1=') === 0) {
-                    $receivedHash = substr($part, 3);
-                    break;
-                }
-            }
-
-            if (!hash_equals($hmac, $receivedHash)) {
-                Log::warning('Intento de webhook de Mercado Pago con firma inválida.', [
-                    'signature' => $signature,
-                    'id' => $requestId
-                ]);
-                return response()->json(['error' => 'Invalid signature'], 400);
-            }
+        if (!hash_equals($hmac, $receivedHash)) {
+            Log::warning('Intento de webhook de Mercado Pago con firma inválida.', [
+                'signature' => $signature,
+                'id' => $requestId
+            ]);
+            return response()->json(['error' => 'Invalid signature'], 400);
         }
 
 
@@ -129,7 +132,7 @@ class WebhookController extends Controller
                 'trace'      => $e->getTraceAsString(),
                 'webhook_id' => $webhook->id,
             ]);
-            return response()->json(['ok' => false, 'error' => $e->getMessage()], 200);
+            return response()->json(['ok' => false], 500);
         }
     }
 
