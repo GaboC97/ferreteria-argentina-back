@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(php artisan migrate:*)"
+      "Bash(php artisan migrate:*)",
+      "Bash(curl:*)",
+      "Bash(php artisan route:list:*)",
+      "Bash(echo:*)",
+      "Bash(php artisan tinker:*)",
+      "Bash(php -l:*)",
+      "Bash(truncate:*)",
+      "Bash(php artisan migrate:rollback:*)",
+      "Bash(php artisan make:migration add_paljet_fields_to_pedido_items_table)",
+      "Bash(mysql:*)",
+      "Bash(php artisan make:migration:*)"
     ]
   }
 }

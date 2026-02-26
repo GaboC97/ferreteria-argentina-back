@@ -23,7 +23,8 @@ class ContenedorReservaConfirmadaCliente extends Mailable
 
   public function build()
   {
-    return $this->subject('✅ Reserva de contenedor confirmada')
+    return $this->from('pedidos@ferrear.com.ar', 'Ferrear - Pedidos')
+      ->subject('Reserva de contenedor confirmada')
       ->markdown('emails.contenedor.cliente_confirmada');
   }
 }

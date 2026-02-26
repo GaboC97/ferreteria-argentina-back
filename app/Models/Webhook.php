@@ -19,7 +19,7 @@ class Webhook extends Model
     ];
 
     protected $casts = [
-        'payload_json' => 'array',
+        'payload_json' => 'string',
         'procesado' => 'bool',
         'procesado_en' => 'datetime',
     ];

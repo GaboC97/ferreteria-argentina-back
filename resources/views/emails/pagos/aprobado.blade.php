@@ -1,23 +1,32 @@
 @component('mail::message')
-# ✅ ¡Gracias por tu compra, {{ $pedido->nombre_contacto ?? 'Cliente' }}!
+@php
+    $fmt = fn($n) => '$' . number_format((float)$n, 2, ',', '.');
+@endphp
 
-Tu pedido **#{{ $pedido->id }}** fue **confirmado** y el pago se acreditó correctamente.
+@if($esAdmin)
+# ✅ Pago confirmado
 
-{{-- ✅ AGREGADO: Fecha del pedido --}}
-**Fecha:** {{ $pedido->created_at->format('d/m/Y') }}
+El pago del pedido **#{{ $pedido->id }}** fue aprobado.
+@else
+# ✅ ¡Tu pago fue confirmado, {{ explode(' ', $pedido->nombre_contacto ?? 'Cliente')[0] }}!
+
+Tu pedido **#{{ $pedido->id }}** fue pagado correctamente. Ya lo estamos preparando.
+@endif
+
+**Fecha:** {{ $pedido->created_at->format('d/m/Y H:i') }}
 
 ---
 
-## 📦 Resumen del pedido
+## 📦 Productos
 @component('mail::table')
-| Producto | Cant. | Precio | Subtotal |
+| Producto | Cant. | Precio unit. | Subtotal |
 |:--|--:|--:|--:|
 @foreach(($pedido->items ?? []) as $it)
-| {{ $it->nombre_producto ?? ('Producto #' . $it->producto_id) }} | {{ (int) $it->cantidad }} | ${{ number_format((float) $it->precio_unitario, 2, ',', '.') }} | ${{ number_format((float) $it->subtotal, 2, ',', '.') }} |
+| {{ $it->nombre_producto ?? ('Artículo #' . ($it->paljet_art_id ?? $it->producto_id)) }} | {{ (int) $it->cantidad }} | {{ $fmt($it->precio_unitario) }} | {{ $fmt($it->subtotal) }} |
 @endforeach
 @endcomponent
 
-**Total:** ${{ number_format((float) $pedido->total_final, 2, ',', '.') }} {{ $pedido->moneda ?? 'ARS' }}
+**Total: {{ $fmt($pedido->total_final) }} {{ $pedido->moneda ?? 'ARS' }}**
 
 ---
 
@@ -37,13 +46,6 @@ Tu pedido **#{{ $pedido->id }}** fue **confirmado** y el pago se acreditó corre
 @if($pedido->envio->referencias)
 **Referencias:** {{ $pedido->envio->referencias }}
 @endif
-
-@if($pedido->envio->empresa)
-**Empresa:** {{ $pedido->envio->empresa }}
-@endif
-@if($pedido->envio->tracking_codigo)
-**Tracking:** {{ $pedido->envio->tracking_codigo }}
-@endif
 @else
 **Sucursal:** {{ optional($pedido->sucursal)->nombre ?? 'Sucursal seleccionada' }}
 @endif
@@ -52,20 +54,23 @@ Tu pedido **#{{ $pedido->id }}** fue **confirmado** y el pago se acreditó corre
 
 ## 🧾 Datos del comprador
 - **Nombre:** {{ $pedido->nombre_contacto ?? '-' }}
-- **DNI:** {{ $pedido->dni_contacto ?? optional($pedido->cliente)->dni ?? '-' }}
+- **DNI:** {{ $pedido->dni_contacto ?? '-' }}
+@if($pedido->cuit_contacto)
+- **CUIT:** {{ $pedido->cuit_contacto }}
+@endif
+- **Condición IVA:** {{ $pedido->condicion_iva_contacto ?? '-' }}
 - **Email:** {{ $pedido->email_contacto ?? '-' }}
 - **Teléfono:** {{ $pedido->telefono_contacto ?? '-' }}
-
 
 @if($pedido->nota_cliente)
 ---
 
-## 📝 Nota
+## 📝 Nota del cliente
 {{ $pedido->nota_cliente }}
 @endif
 
 ---
 
-Gracias,  
+Gracias,
 **Ferretería Argentina RW**
 @endcomponent

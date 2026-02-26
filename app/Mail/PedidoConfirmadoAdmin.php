@@ -6,6 +6,7 @@ use App\Models\Pedido;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
@@ -21,7 +22,8 @@ class PedidoConfirmadoAdmin extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: "🧾 Nuevo pedido pagado #{$this->pedido->id}"
+            from: new Address('pedidos@ferrear.com.ar', 'Ferrear - Pedidos'),
+            subject: "Nuevo pedido pagado #{$this->pedido->id}",
         );
     }
 

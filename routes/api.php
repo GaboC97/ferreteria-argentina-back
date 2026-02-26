@@ -50,6 +50,10 @@ Route::post('/contacto', [ContactoController::class, 'store']);
 Route::post('/postulaciones', [PostulacionController::class, 'store']);
 
 Route::get('/catalogo', [PaljetCatalogoController::class, 'index']);
+Route::get('/catalogo/categorias', [PaljetCatalogoController::class, 'categorias']);
+// Admin: artículos sin stock en Playa Unión (debe ir antes del wildcard {paljetId})
+Route::middleware(['auth:sanctum', 'admin'])->get('/catalogo/sin-stock', [PaljetCatalogoController::class, 'sinStock']);
+Route::get('/catalogo/{codigo}/imagen', [PaljetCatalogoController::class, 'imagen']);
 Route::get('/catalogo/{paljetId}', [PaljetCatalogoController::class, 'show']);
 
 // =====================
@@ -92,6 +96,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('/productos', [AdminController::class, 'crearProducto']);
     Route::put('/productos/{id}', [AdminController::class, 'actualizarProducto']);
     Route::delete('/productos/{id}', [AdminController::class, 'eliminarProducto']);
+    Route::patch('/productos/{id}/oferta', [AdminController::class, 'toggleOferta']);
     Route::post('/pedidos/{id}/devolver', [PedidoController::class, 'devolver']);
     Route::post('/pedidos/{id}/rechazar-devolucion', [PedidoController::class, 'rechazarDevolucion']);
     // Gestión de clientes
@@ -111,4 +116,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
 // Gestión de pedidos (admin) - fuera del prefix para mantener /api/pedidos/{id}
 Route::middleware(['auth:sanctum', 'admin'])->group(function () {
     Route::put('/pedidos/{id}', [PedidoController::class, 'update']);
+    Route::post('/pedidos/{id}/confirmar-pago', [PedidoController::class, 'confirmarPago']);
+    Route::post('/pedidos/{id}/rechazar-pago', [PedidoController::class, 'rechazarPago']);
+    Route::get('/pedidos/{id}/comprobante', [PedidoController::class, 'verComprobante']);
 });

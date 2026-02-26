@@ -2,103 +2,109 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\PaljetArticulo;
+use App\Services\PaljetService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class PaljetCatalogoController extends Controller
 {
-    public function index(Request $request)
+    protected PaljetService $paljet;
+
+    public function __construct(PaljetService $paljet)
     {
-        $q = trim((string) $request->query('q', ''));
-        $perPage = (int) $request->query('per_page', 20);
-        $perPage = max(1, min($perPage, 100));
-
-        $onlyWeb = filter_var($request->query('only_web', '1'), FILTER_VALIDATE_BOOLEAN);
-
-        // Lista de precios (PalJet) opcional
-        $listaId = $request->query('lista_id');
-        $listaId = is_null($listaId) ? null : (int) $listaId;
-
-        // Stock: por depósito o total (opcionales)
-        $depositoId = $request->query('deposito_id');
-        $depositoId = is_null($depositoId) ? null : (int) $depositoId;
-
-        $stockTotal = filter_var($request->query('stock_total', '0'), FILTER_VALIDATE_BOOLEAN);
-
-        // Base query (siempre desde paljet_articulos)
-        $query = PaljetArticulo::query();
-
-        if ($onlyWeb) {
-            $query->where('publica_web', true);
-        }
-
-        if ($q !== '') {
-            $query->where(function ($sub) use ($q) {
-                $sub->where('descripcion', 'like', "%{$q}%")
-                    ->orWhere('codigo', 'like', "%{$q}%")
-                    ->orWhere('ean', 'like', "%{$q}%")
-                    ->orWhere('desc_cliente', 'like', "%{$q}%")
-                    ->orWhere('familia_path', 'like', "%{$q}%");
-            });
-        }
-
-        /**
-         * PRECIOS (lista)
-         */
-        if (!is_null($listaId)) {
-            $query->leftJoin('paljet_precios as pp', function ($join) use ($listaId) {
-                $join->on('pp.articulo_id', '=', 'paljet_articulos.paljet_id')
-                    ->where('pp.lista_id', '=', $listaId);
-            })
-            ->addSelect('paljet_articulos.*')
-            ->addSelect([
-                'precio_sin_iva' => 'pp.pr_vta',
-                'precio_con_iva' => 'pp.pr_final',
-            ]);
-        } else {
-            // Si no hay join, igual aseguramos que seleccione columnas del modelo
-            $query->addSelect('paljet_articulos.*');
-        }
-
-        /**
-         * STOCK (por depósito o total)
-         *
-         * - Si viene deposito_id -> devuelve stock de ese depósito.
-         * - Si NO viene deposito_id y viene stock_total=true -> suma stock de todos los depósitos.
-         * - Si no viene nada -> no agrega stock.
-         */
-        if (!is_null($depositoId)) {
-            $query->leftJoin('paljet_stock as ps', function ($join) use ($depositoId) {
-                $join->on('ps.articulo_id', '=', 'paljet_articulos.paljet_id')
-                    ->where('ps.deposito_id', '=', $depositoId);
-            })
-            ->addSelect([
-                'stock_existencia' => 'ps.existencia',
-                'stock_disponible' => 'ps.disponible',
-            ]);
-        } elseif ($stockTotal) {
-            $query->leftJoin('paljet_stock as pst', function ($join) {
-                $join->on('pst.articulo_id', '=', 'paljet_articulos.paljet_id');
-            })
-            ->addSelect([
-                DB::raw('COALESCE(SUM(pst.existencia),0) as stock_existencia'),
-                DB::raw('COALESCE(SUM(pst.disponible),0) as stock_disponible'),
-            ])
-            // agrupamos por la PK real de paljet_articulos, para que SUM funcione
-            ->groupBy('paljet_articulos.id');
-        }
-
-        $query->orderBy('descripcion');
-
-        return response()->json(
-            $query->paginate($perPage)
-        );
+        $this->paljet = $paljet;
     }
 
+    /**
+     * Listar artículos desde el WS de Paljet.
+     */
+    public function index(Request $request)
+    {
+        $filtros = array_filter([
+            'page'           => $request->query('page', 0),
+            'size'           => $request->query('size', 20),
+            'descripcion'    => $request->query('q'),
+            'desc_mod_med'   => $request->query('desc_mod_med'),
+            'codigo'         => $request->query('codigo'),
+            'ean'            => $request->query('ean'),
+            'marca'          => $request->query('marca'),
+            'familia'        => $request->query('familia'),
+            'categoria'      => $request->query('categoria'),
+            'solo_activos'   => $request->query('solo_activos', 'true'),
+            'publica_web'    => $request->query('publica_web', 'true'),
+            'include'        => $request->query('include', 'listas'),
+            'lista_id'       => $request->query('lista_id'),
+        ], fn($v) => !is_null($v) && $v !== '');
+
+        $data = $this->paljet->getArticulos($filtros);
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Árbol de categorías filtrado a las que tienen artículos publicados.
+     * GET /api/catalogo/categorias
+     */
+    public function categorias()
+    {
+        $data = $this->paljet->getCategorias();
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Obtener un artículo por su ID de Paljet.
+     */
     public function show(int $paljetId)
     {
-        $item = PaljetArticulo::where('paljet_id', $paljetId)->firstOrFail();
-        return response()->json($item);
+        $data = $this->paljet->getArticulo($paljetId);
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Artículos con stock = 0 en dep_id=8 (Playa Unión). Solo admin.
+     * GET /api/catalogo/sin-stock
+     */
+    public function sinStock(Request $request)
+    {
+        $page = (int) $request->query('page', 0);
+        $size = (int) $request->query('size', 100);
+
+        $data = $this->paljet->getArticulosSinStock($page, $size);
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
+        }
+
+        return response()->json($data);
+    }
+
+    /**
+     * Proxy de imagen de un artículo por código.
+     * GET /api/catalogo/{codigo}/imagen
+     */
+    public function imagen(string $codigo)
+    {
+        $result = $this->paljet->getImagenArticulo($codigo);
+
+        if (isset($result['error'])) {
+            return response()->json(['error' => $result['error']], $result['status'] ?? 404);
+        }
+
+        return response($result['body'], 200)
+            ->header('Content-Type', $result['type'])
+            ->header('Cache-Control', 'public, max-age=86400');
     }
 }

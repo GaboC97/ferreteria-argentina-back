@@ -54,7 +54,7 @@ class AuthController extends Controller
             $user->save();
 
             // enviar mail fuera? lo hacemos dentro porque es simple
-            Mail::to($user->email)->send(new VerifyEmailOtpMail($code, $user->name));
+            Mail::mailer('verificaciones')->to($user->email)->send(new VerifyEmailOtpMail($code, $user->name));
 
             return compact('user', 'cliente');
         });
@@ -230,8 +230,10 @@ public function updatePerfil(Request $request): JsonResponse
         $user->save();
 
         // Enviar mail (acá podés usar Mailable, pero te dejo simple)
-        Mail::raw("Tu código de verificación es: {$otp}. Vence en 10 minutos.", function ($message) use ($user) {
-            $message->to($user->email)->subject('Código de verificación');
+        Mail::mailer('verificaciones')->raw("Tu código de verificación es: {$otp}. Vence en 10 minutos.", function ($message) use ($user) {
+            $message->from('verificacionesopt@ferrear.com.ar', 'Ferrear')
+                    ->to($user->email)
+                    ->subject('Código de verificación');
         });
 
         return response()->json([

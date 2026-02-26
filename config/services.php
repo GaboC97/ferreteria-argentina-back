@@ -37,11 +37,20 @@ return [
     ],
 
     'paljet' => [
-        'base_url' => env('PALJET_BASE_URL'),
-        'emp_id'   => env('PALJET_EMP_ID'),
-        'user'     => env('PALJET_USER'),
-        'pass'     => env('PALJET_PASS'),
-        'timeout'  => env('PALJET_TIMEOUT', 30),
+        'base_url'     => env('PALJET_BASE_URL'),
+        'emp_id'       => env('PALJET_EMP_ID'),
+        'user'         => env('PALJET_USER'),
+        'pass'         => env('PALJET_PASS'),
+        'timeout'      => env('PALJET_TIMEOUT', 30),
+        'dep_id'       => env('PALJET_DEP_ID', 8),
+        // Pedidos web
+        'web_loc_id'   => env('PALJET_WEB_LOC_ID', 174),    // PLAYA UNION
+        'web_domicilio'=> env('PALJET_WEB_DOMICILIO', 'José Coronel 379'),
+        'web_cond_vta' => env('PALJET_WEB_COND_VTA', 129),  // MERCADO PAGO
+        // Stock: unidades iguales o menores a este valor activan "últimas unidades"
+        'stock_alerta' => env('PALJET_STOCK_ALERTA', 3),
+        // Email que recibe copia del pedido web desde Paljet
+        'notif_email'  => env('FERRETERIA_PEDIDOS_EMAIL'),
     ],
 
 

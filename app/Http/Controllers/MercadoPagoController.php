@@ -22,153 +22,174 @@ use Illuminate\Support\Str;
 class MercadoPagoController extends Controller
 {
     public function crearPreferencia(Request $request)
-    {
-        $data = $request->validate([
-            'pedido_id' => ['required', 'integer'],
-            'access_token' => ['nullable', 'string', 'uuid'],
-        ]);
+{
+    $data = $request->validate([
+        'pedido_id' => ['required', 'integer'],
+        'access_token' => ['nullable', 'string', 'uuid'],
+    ]);
 
-        $pedidoId = (int) $data['pedido_id'];
+    $pedidoId = (int) $data['pedido_id'];
 
-        $pedido = Pedido::findAuthorizedOrFail($pedidoId, $request);
+    $pedido = Pedido::findAuthorizedOrFail($pedidoId, $request);
 
-        if ($pedido->estado !== 'pendiente_pago') {
-            return response()->json(['message' => 'El pedido no está en estado pendiente_pago'], 409);
+    if ($pedido->estado !== 'pendiente_pago') {
+        return response()->json([
+            'message' => 'El pedido no está en estado pendiente_pago'
+        ], 409);
+    }
+
+    // ✅ Traer items (soporta productos locales y Paljet)
+    $items = DB::table('pedido_items as pi')
+        ->leftJoin('productos as p', 'p.id', '=', 'pi.producto_id')
+        ->where('pi.pedido_id', $pedidoId)
+        ->select(
+            'pi.producto_id',
+            'pi.paljet_art_id',
+            'pi.cantidad',
+            'pi.precio_unitario',
+            DB::raw('COALESCE(p.nombre, pi.nombre_producto) as nombre')
+        )
+        ->get();
+
+    if ($items->isEmpty()) {
+        return response()->json([
+            'message' => 'El pedido no tiene items'
+        ], 409);
+    }
+
+    // ✅ Validar precios
+    foreach ($items as $it) {
+        $price = (float) $it->precio_unitario;
+
+        if ($price <= 0) {
+            return response()->json([
+                'message' => 'Producto sin precio válido para Mercado Pago',
+                'nombre' => $it->nombre,
+                'precio_unitario' => $it->precio_unitario,
+            ], 422);
         }
+    }
 
-        $items = DB::table('pedido_items as pi')
-            ->join('productos as p', 'p.id', '=', 'pi.producto_id')
-            ->where('pi.pedido_id', $pedidoId)
-            ->select('pi.producto_id', 'pi.cantidad', 'pi.precio_unitario', 'p.nombre')
-            ->get();
+    $medioMp = DB::table('medios_pago')
+        ->where('codigo', 'mercadopago')
+        ->first();
 
-        if ($items->isEmpty()) return response()->json(['message' => 'El pedido no tiene items'], 409);
+    if (!$medioMp) {
+        return response()->json([
+            'message' => 'Medio de pago Mercado Pago no existe'
+        ], 500);
+    }
 
-        // ✅ Evitar pagar vacío (reservas o contenedores)
-        $reservasStockActivas = DB::table('reservas_stock')
-            ->where('pedido_id', $pedidoId)
-            ->where('estado', 'activa')
-            ->count();
+    $mpToken = config('services.mercadopago.access_token');
 
-        $contenedores = DB::table('contenedor_reservas')
-            ->where('pedido_id', $pedidoId)
-            ->count();
+    if (!$mpToken) {
+        return response()->json([
+            'message' => 'MP_ACCESS_TOKEN no configurado'
+        ], 500);
+    }
 
-        if ($reservasStockActivas === 0 && $contenedores === 0) {
-            return response()->json(['message' => 'El pedido no tiene reservas activas ni contenedores.'], 409);
-        }
+    // ✅ Reutilizar preferencia si ya existe
+    $pagoExistente = DB::table('pagos')
+        ->where('pedido_id', $pedidoId)
+        ->whereNotNull('mp_preference_id')
+        ->orderByDesc('id')
+        ->first();
 
-        $medioMp = DB::table('medios_pago')->where('codigo', 'mercadopago')->first();
-        if (!$medioMp) return response()->json(['message' => 'Medio de pago Mercado Pago no existe'], 500);
+    if ($pagoExistente && $pagoExistente->mp_raw_json) {
 
-        $mpToken = config('services.mercadopago.access_token');
-        if (!$mpToken) return response()->json(['message' => 'MP_ACCESS_TOKEN no configurado'], 500);
+        $raw = json_decode($pagoExistente->mp_raw_json, true);
 
-        // ✅ Reutilizar preferencia existente (evita duplicados)
-        $pagoExistente = DB::table('pagos')
-            ->where('pedido_id', $pedidoId)
-            ->whereNotNull('mp_preference_id')
-            ->orderByDesc('id')
-            ->first();
-
-        if ($pagoExistente && $pagoExistente->mp_raw_json) {
-            $raw = json_decode($pagoExistente->mp_raw_json, true);
-            $initPoint = $raw['init_point'] ?? null;
-            $sandboxInitPoint = $raw['sandbox_init_point'] ?? null;
-
-            if ($initPoint || $sandboxInitPoint) {
-                return response()->json([
-                    'ok' => true,
-                    'pedido_id' => $pedidoId,
-                    'pago_id' => $pagoExistente->id,
-                    'preference_id' => $pagoExistente->mp_preference_id,
-                    'init_point' => $initPoint,
-                    'sandbox_init_point' => $sandboxInitPoint,
-                ]);
-            }
-        }
-
-        // ✅ Crear registro de pago (nuevo)
-        $pagoId = DB::table('pagos')->insertGetId([
-            'pedido_id' => $pedidoId,
-            'medio_pago_id' => $medioMp->id,
-            'estado' => 'iniciado',
-            'monto' => (float) $pedido->total_final,
-            'moneda' => $pedido->moneda ?? 'ARS',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        $mpItems = $items->map(fn($it) => [
-            'title' => $it->nombre,
-            'quantity' => (int)$it->cantidad,
-            'unit_price' => (float)$it->precio_unitario,
-            'currency_id' => 'ARS',
-        ])->values()->all();
-
-        foreach ($items as $it) {
-            $price = (float)$it->precio_unitario;
-            if ($price <= 0) {
-                return response()->json([
-                    'message' => 'Producto sin precio válido para Mercado Pago',
-                    'producto_id' => $it->producto_id,
-                    'nombre' => $it->nombre ?? null,
-                    'precio_unitario' => $it->precio_unitario,
-                ], 422);
-            }
-        }
-
-        $payloadMp = [
-            'items' => $mpItems,
-            'external_reference' => (string) $pedidoId,
-            'back_urls' => config('mercadopago.back_urls'),
-            'notification_url' => config('mercadopago.webhook_url'),
-            'auto_return' => 'approved',
-            'metadata' => [
+        if (!empty($raw['init_point']) || !empty($raw['sandbox_init_point'])) {
+            return response()->json([
+                'ok' => true,
                 'pedido_id' => $pedidoId,
-                'pago_id' => $pagoId,
-            ],
-        ];
-        $resp = Http::withToken($mpToken)
-            ->acceptJson()
-            ->post('https://api.mercadopago.com/checkout/preferences', $payloadMp);
-
-        if (!$resp->successful()) {
-            Log::error('MP preference error', [
-                'status' => $resp->status(),
-                'body' => $resp->body(),
-                'pedido_id' => $pedidoId,
-                'pago_id' => $pagoId,
+                'pago_id' => $pagoExistente->id,
+                'preference_id' => $pagoExistente->mp_preference_id,
+                'init_point' => $raw['init_point'] ?? null,
+                'sandbox_init_point' => $raw['sandbox_init_point'] ?? null,
             ]);
+        }
+    }
 
-            DB::table('pagos')->where('id', $pagoId)->update([
+    // ✅ Crear nuevo pago
+    $pagoId = DB::table('pagos')->insertGetId([
+        'pedido_id' => $pedidoId,
+        'medio_pago_id' => $medioMp->id,
+        'estado' => 'iniciado',
+        'monto' => (float) $pedido->total_final,
+        'moneda' => $pedido->moneda ?? 'ARS',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $mpItems = $items->map(function ($it) {
+        return [
+            'title' => $it->nombre,
+            'quantity' => (int) $it->cantidad,
+            'unit_price' => (float) $it->precio_unitario,
+            'currency_id' => 'ARS',
+        ];
+    })->values()->all();
+
+    $payloadMp = [
+        'items' => $mpItems,
+        'external_reference' => (string) $pedidoId,
+        'back_urls' => config('mercadopago.back_urls'),
+        'notification_url' => config('mercadopago.webhook_url'),
+        'auto_return' => 'approved',
+        'metadata' => [
+            'pedido_id' => $pedidoId,
+            'pago_id' => $pagoId,
+        ],
+    ];
+
+    $resp = Http::withToken($mpToken)
+        ->acceptJson()
+        ->post('https://api.mercadopago.com/checkout/preferences', $payloadMp);
+
+    if (!$resp->successful()) {
+
+        Log::error('MP preference error', [
+            'status' => $resp->status(),
+            'body' => $resp->body(),
+            'pedido_id' => $pedidoId,
+            'pago_id' => $pagoId,
+        ]);
+
+        DB::table('pagos')
+            ->where('id', $pagoId)
+            ->update([
                 'estado' => 'rechazado',
                 'mp_status' => 'preference_error',
                 'mp_raw_json' => $resp->body(),
                 'updated_at' => now(),
             ]);
 
-            return response()->json(['message' => 'Error creando preferencia MP'], 502);
-        }
+        return response()->json([
+            'message' => 'Error creando preferencia MP'
+        ], 502);
+    }
 
-        $pref = $resp->json();
+    $pref = $resp->json();
 
-        DB::table('pagos')->where('id', $pagoId)->update([
+    DB::table('pagos')
+        ->where('id', $pagoId)
+        ->update([
             'mp_preference_id' => $pref['id'] ?? null,
             'mp_status' => 'preference_created',
             'mp_raw_json' => json_encode($pref),
             'updated_at' => now(),
         ]);
 
-        return response()->json([
-            'ok' => true,
-            'pedido_id' => $pedidoId,
-            'pago_id' => $pagoId,
-            'preference_id' => $pref['id'] ?? null,
-            'init_point' => $pref['init_point'] ?? null,
-            'sandbox_init_point' => $pref['sandbox_init_point'] ?? null,
-        ]);
-    }
+    return response()->json([
+        'ok' => true,
+        'pedido_id' => $pedidoId,
+        'pago_id' => $pagoId,
+        'preference_id' => $pref['id'] ?? null,
+        'init_point' => $pref['init_point'] ?? null,
+        'sandbox_init_point' => $pref['sandbox_init_point'] ?? null,
+    ]);
+}
 
 
 
@@ -525,7 +546,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
 
             if ($tomado) {
                 try {
-                    Mail::to($clienteEmail)->send(new PedidoConfirmadoCliente($pedido));
+                    Mail::mailer('pedidos')->to($clienteEmail)->send(new PedidoConfirmadoCliente($pedido));
                 } catch (\Throwable $e) {
                     Log::error("Fallo mail cliente: " . $e->getMessage());
                     Pedido::where('id', $pedido->id)->update(['email_cliente_enviado_at' => null]);
@@ -541,7 +562,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
 
             if ($tomado) {
                 try {
-                    Mail::to($adminEmail)->send(new PedidoConfirmadoAdmin($pedido));
+                    Mail::mailer('pedidos')->to($adminEmail)->send(new PedidoConfirmadoAdmin($pedido));
                 } catch (\Throwable $e) {
                     Log::error("Fallo mail admin: " . $e->getMessage());
                     Pedido::where('id', $pedido->id)->update(['email_admin_enviado_at' => null]);
@@ -563,7 +584,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
                 ->update(['email_enviado_at' => now()]);
             if ($tomado) {
                 try {
-                    Mail::to($clienteEmail)->send(new ContenedorReservaConfirmadaCliente($pedido, $reserva, $productoNombre));
+                    Mail::mailer('pedidos')->to($clienteEmail)->send(new ContenedorReservaConfirmadaCliente($pedido, $reserva, $productoNombre));
                 } catch (\Throwable $e) {
                     ContenedorReserva::where('id', $reserva->id)->update(['email_enviado_at' => null]);
                 }
@@ -577,7 +598,7 @@ private function sincronizarPagoConMP($pedidoId, $dataMP)
                  ->update(['email_admin_enviado_at' => now()]);
             if ($tomado) {
                 try {
-                    Mail::to($adminEmail)->send(new ContenedorReservaConfirmadaAdmin($pedido, $reserva, $productoNombre));
+                    Mail::mailer('pedidos')->to($adminEmail)->send(new ContenedorReservaConfirmadaAdmin($pedido, $reserva, $productoNombre));
                 } catch (\Throwable $e) {
                     ContenedorReserva::where('id', $reserva->id)->update(['email_admin_enviado_at' => null]);
                 }

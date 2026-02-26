@@ -10,29 +10,31 @@ use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
-class PedidoConfirmadoCliente extends Mailable
+class PagoAprobadoMail extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public function __construct(public Pedido $pedido)
-    {
-        // Cargamos lo que vamos a mostrar
-        $this->pedido->loadMissing(['items', 'envio', 'pagos', 'sucursal']);
-    }
+    public function __construct(
+        public readonly Pedido $pedido,
+        public readonly bool $esAdmin = false,
+    ) {}
 
     public function envelope(): Envelope
     {
+        $subject = $this->esAdmin
+            ? "Pago confirmado - Pedido #{$this->pedido->id} - {$this->pedido->nombre_contacto}"
+            : "¡Pago confirmado! Pedido #{$this->pedido->id}";
+
         return new Envelope(
-            from: new Address('pedidos@ferrear.com.ar', 'Ferrear - Pedidos'),
-            subject: "Pedido #{$this->pedido->id} confirmado",
+            from: new Address('pagos@ferrear.com.ar', 'Ferrear - Pagos'),
+            subject: $subject,
         );
     }
 
     public function content(): Content
     {
         return new Content(
-            markdown: 'emails.pedidos.cliente_confirmado',
-            with: ['pedido' => $this->pedido],
+            markdown: 'emails.pagos.aprobado',
         );
     }
 

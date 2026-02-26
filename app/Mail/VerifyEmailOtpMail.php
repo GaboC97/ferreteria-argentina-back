@@ -5,6 +5,7 @@ namespace App\Mail;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
@@ -20,6 +21,7 @@ class VerifyEmailOtpMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
+            from: new Address('verificacionesopt@ferrear.com.ar', 'Ferrear'),
             subject: 'Tu código de verificación',
         );
     }
@@ -27,7 +29,7 @@ class VerifyEmailOtpMail extends Mailable
     public function content(): Content
     {
         return new Content(
-            view: 'emails.verify-otp', // ✅ resources/views/verify-otp.blade.php
+            view: 'emails.verify-otp',
             with: [
                 'code' => $this->code,
                 'name' => $this->name,

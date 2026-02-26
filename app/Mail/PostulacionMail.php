@@ -6,6 +6,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Attachment;
 use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Address;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
@@ -25,6 +26,7 @@ class PostulacionMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
+            from: new Address('rrhh@ferrear.com.ar', 'Ferrear - RRHH'),
             subject: 'Nueva postulación: ' . $this->datos['puesto'] . ' - ' . $this->datos['nombre'],
             replyTo: [$this->datos['email']],
         );

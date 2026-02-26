@@ -24,7 +24,7 @@ class PostulacionController extends Controller
         $cvName = time() . '_' . Str::random(20) . '.' . $cv->extension();
         $cvPath = $cv->storeAs('postulaciones', $cvName);
 
-        Mail::to('rrhh@ferrear.com.ar')->send(new PostulacionMail($data, $cvPath));
+        Mail::mailer('rrhh')->to('rrhh@ferrear.com.ar')->send(new PostulacionMail($data, $cvPath));
 
         return response()->json([
             'message' => 'Postulación recibida correctamente.',

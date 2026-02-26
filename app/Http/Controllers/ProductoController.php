@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ProductoResource;
 use App\Models\Producto;
+use App\Services\PaljetService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 
 class ProductoController extends Controller
@@ -30,9 +32,26 @@ public function index(Request $request)
         $q->where('categoria_id', (int) $categoriaId);
     }
 
-    // ✅ Filtro por EN OFERTA (reemplaza el de destacado)
-    if ($request->has('en_oferta')) {
-        $q->where('en_oferta', $request->boolean('en_oferta'));
+    // Filtro EN OFERTA → devuelve artículos de Paljet marcados localmente
+    if ($request->has('en_oferta') && $request->boolean('en_oferta')) {
+        $ofertas = DB::table('paljet_ofertas')->get(['paljet_art_id', 'precio_oferta']);
+
+        if ($ofertas->isEmpty()) {
+            return response()->json([
+                'content' => [], 'totalElements' => 0, 'totalPages' => 0, 'number' => 0, 'size' => 0,
+            ]);
+        }
+
+        $artIds    = $ofertas->pluck('paljet_art_id')->toArray();
+        $ofertaMap = $ofertas->pluck('precio_oferta', 'paljet_art_id')->toArray();
+
+        $data = app(PaljetService::class)->getArticulosEnOferta($artIds, $ofertaMap);
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
+        }
+
+        return response()->json($data);
     }
 
     // Filtro por marcas

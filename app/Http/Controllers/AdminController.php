@@ -10,6 +10,8 @@ use App\Models\Cliente;
 use App\Models\Producto;
 use App\Models\Sucursal;
 use App\Models\Configuracion;
+use App\Models\PaljetOferta;
+use App\Services\PaljetService;
 
 class AdminController extends Controller
 {
@@ -159,58 +161,101 @@ class AdminController extends Controller
     }
 
     /**
-     * Listar todos los productos con stock (admin)
+     * Listar artículos del catálogo Paljet (admin)
+     * Responde con el mismo formato que GET /api/catalogo (Paljet page format).
      */
     public function productos(Request $request)
     {
-        $query = Producto::with(['marca', 'categoria']);
+        $paljet = app(PaljetService::class);
 
-        // Filtros opcionales
-        if ($request->has('activo')) {
-            $query->where('activo', $request->activo);
+        // Paljet usa page base-0; el frontend admin puede enviar page base-1 o base-0
+        $pageRaw = (int) $request->query('page', 1);
+        $page    = $pageRaw > 0 ? $pageRaw - 1 : 0; // normalizar a base-0
+
+        $filtros = array_filter([
+            'page'        => $page,
+            'size'        => min((int) $request->query('per_page', 20), 100),
+            'descripcion' => $request->query('search'),
+            'marca'       => $request->query('marca'),
+            'familia'     => $request->query('familia'),
+            'categoria'   => $request->query('categoria_id'),
+            'solo_activos'=> $request->query('activo', 'true'),
+            'publica_web' => 'true',
+            'include'     => 'listas',
+        ], fn($v) => !is_null($v) && $v !== '');
+
+        $data = $paljet->getArticulos($filtros);
+
+        if (isset($data['error'])) {
+            return response()->json(['error' => $data['error']], $data['status'] ?? 500);
         }
 
-        if ($request->has('marca_id')) {
-            $query->where('marca_id', $request->marca_id);
+        // Enriquecer cada artículo con en_oferta y precio_oferta desde la tabla local
+        if (!empty($data['content'])) {
+            $ofertaMap = PaljetOferta::all()->keyBy('paljet_art_id');
+            $data['content'] = array_map(function ($art) use ($ofertaMap) {
+                $oferta = $ofertaMap->get((int) $art['id']);
+                $art['en_oferta']     = $oferta !== null;
+                $art['precio_oferta'] = $oferta?->precio_oferta;
+                return $art;
+            }, $data['content']);
         }
 
-        if ($request->has('categoria_id')) {
-            $query->where('categoria_id', $request->categoria_id);
-        }
-
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('nombre', 'like', "%{$search}%")
-                    ->orWhere('descripcion', 'like', "%{$search}%")
-                    ->orWhere('sku', 'like', "%{$search}%");
-            });
-        }
-
-        $perPage = min((int) $request->get('per_page', 15), 100);
-        $productos = $query->paginate($perPage);
-
-        return response()->json($productos, 200);
+        return response()->json($data);
     }
 
     /**
-     * Estadísticas de productos
+     * Activar / desactivar el flag en_oferta de un artículo de Paljet.
+     * PATCH /admin/productos/{id}/oferta
+     */
+    public function toggleOferta(Request $request, int $artId)
+    {
+        $data = $request->validate([
+            'en_oferta'     => ['required', 'boolean'],
+            'precio_oferta' => ['nullable', 'numeric', 'min:0'],
+        ]);
+
+        if ($data['en_oferta']) {
+            $oferta = PaljetOferta::firstOrCreate(['paljet_art_id' => $artId]);
+            $oferta->precio_oferta = isset($data['precio_oferta']) ? (float) $data['precio_oferta'] : null;
+            $oferta->save();
+        } else {
+            PaljetOferta::where('paljet_art_id', $artId)->delete();
+        }
+
+        return response()->json([
+            'id'            => $artId,
+            'en_oferta'     => (bool) $data['en_oferta'],
+            'precio_oferta' => $data['en_oferta'] ? ($data['precio_oferta'] ?? null) : null,
+        ]);
+    }
+
+    /**
+     * Estadísticas de productos desde Paljet
      */
     public function productosStats()
     {
-        $totalProductos = DB::table('productos')->count();
-        $productosActivos = DB::table('productos')->where('activo', true)->count();
-        $productosSinStock = DB::table('productos')
-            ->leftJoin('stock_sucursal', 'productos.id', '=', 'stock_sucursal.producto_id')
-            ->select('productos.id')
-            ->groupBy('productos.id')
-            ->havingRaw('COALESCE(SUM(stock_sucursal.cantidad), 0) = 0')
-            ->count();
+        $paljet = app(PaljetService::class);
+
+        // Total artículos publicados (size=1 para solo traer el count)
+        $totalData = $paljet->getArticulos([
+            'publica_web'  => 'true',
+            'solo_activos' => 'true',
+            'size'         => 1,
+            'page'         => 0,
+        ]);
+
+        $total   = $totalData['totalElements'] ?? 0;
+        $activos = $total; // publicados en web = activos
+
+        // Artículos sin stock en dep_id=8
+        $sinStockData = $paljet->getArticulosSinStock(0, 1);
+        $sinStock     = $sinStockData['totalElements'] ?? 0;
 
         return response()->json([
-            'total' => $totalProductos,
-            'activos' => $productosActivos,
-            'sinStock' => $productosSinStock,
+            'total'    => $total,
+            'activos'  => $activos,
+            'sinStock' => $sinStock,
         ], 200);
     }
 

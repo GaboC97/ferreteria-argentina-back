@@ -28,7 +28,7 @@ class ContactoController extends Controller
             ], 200);
         }
 
-        Mail::to($adminEmail)->send(new ContactoMail($data));
+        Mail::mailer('contacto')->to($adminEmail)->send(new ContactoMail($data));
 
         return response()->json([
             'message' => 'Tu mensaje fue enviado correctamente. Te responderemos a la brevedad.',
