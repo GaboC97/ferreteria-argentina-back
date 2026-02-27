@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -16,6 +17,7 @@ class PaljetService
 
     public function __construct()
     {
+        Log::error('🔥 CONSTRUCTOR PALJET SERVICE ACTIVO 🔥');
         $this->baseUrl = rtrim(config('services.paljet.base_url'), '/');
         $this->user    = config('services.paljet.user');
         $this->pass    = config('services.paljet.pass');
@@ -27,16 +29,16 @@ class PaljetService
     /**
      * Cliente HTTP base con autenticación y headers comunes.
      */
-protected function client()
-{
-    return Http::withBasicAuth($this->user, $this->pass)
-        ->acceptJson()
-        ->asJson() // 👈 ESTA ES LA CLAVE
-        ->withHeaders([
-            'EmpID' => $this->empId,
-        ])
-        ->timeout($this->timeout);
-}
+    protected function client()
+    {
+        return Http::withBasicAuth($this->user, $this->pass)
+            ->acceptJson()
+            ->asJson() // 👈 ESTA ES LA CLAVE
+            ->withHeaders([
+                'EmpID' => $this->empId,
+            ])
+            ->timeout($this->timeout);
+    }
 
     /**
      * Obtener artículos del WS de Paljet.
@@ -270,45 +272,50 @@ protected function client()
      * Busca un cliente en Paljet por CUIT o DNI.
      * Retorna el cli_id de Paljet o null si no se encuentra.
      */
-    public function buscarClientePorCuitODni(string $cuit = null, string $dni = null): ?int
+    public function buscarClientePorCuitODni(?string $cuit = null, ?string $dni = null): ?int
     {
-        // Normalizar: quitar guiones y espacios
+        // Normalizar: quitar todo lo que no sea número
         $cuitLimpio = $cuit ? preg_replace('/[^0-9]/', '', $cuit) : null;
-        $dniLimpio  = $dni  ? preg_replace('/[^0-9]/', '', $dni)  : null;
 
-        // Intentar primero por CUIT
-        if ($cuitLimpio) {
+        // Solo buscar si es un CUIT válido (11 dígitos)
+        if ($cuitLimpio && strlen($cuitLimpio) === 11) {
+
             $id = $this->buscarClienteEnPaljet('cuit', $cuitLimpio);
-            if ($id !== null) return $id;
+
+            if ($id !== null) {
+                return $id;
+            }
         }
 
-        // Fallback por DNI (usando razon_social o cod_externo puede variar — aquí usamos cuit con el DNI)
-        if ($dniLimpio) {
-            $id = $this->buscarClienteEnPaljet('cuit', $dniLimpio);
-            if ($id !== null) return $id;
-        }
-
-        Log::warning('Paljet WS - Cliente no encontrado por CUIT/DNI', [
+        // No se encontró cliente (o no había CUIT válido)
+        Log::warning('Paljet WS - Cliente no encontrado por CUIT', [
             'cuit' => $cuitLimpio,
-            'dni'  => $dniLimpio,
         ]);
 
         return null;
     }
 
-/**
+    /**
      * Crea un cliente en Paljet y retorna su cli_id, o null si falla.
      */
-/**
+    /**
      * Crea un cliente en Paljet y retorna su cli_id, o null si falla.
      */
     public function crearCliente(array $datos): ?int
     {
+        Log::error('🔥 VERSION NUEVA CREAR CLIENTE ACTIVA 🔥');
         // =========================
         // 1. Normalizar CUIT
         // =========================
         $cuitRaw    = preg_replace('/[^0-9]/', '', $datos['cuit'] ?? '');
-        $cuitLimpio = strlen($cuitRaw) === 11 ? $cuitRaw : '';
+        $cuitLimpio = strlen($cuitRaw) === 11 ? $cuitRaw : null;
+
+        if (!$cuitLimpio) {
+            Log::error('Paljet WS - Intento de crear cliente sin CUIT válido', [
+                'cuit_recibido' => $datos['cuit'] ?? null
+            ]);
+            return null;
+        }
 
         // =========================
         // 2. Mapear condición IVA
@@ -321,41 +328,40 @@ protected function client()
             'Resp. No Inscripto'    => 'NI',
             'No Responsable'        => 'NR',
         ];
+
         $condIvaLocal = $datos['condicion_iva'] ?? 'Consumidor Final';
         $ivaId        = $ivaMap[$condIvaLocal] ?? 'CF';
 
         // =========================
         // 3. Determinar Sexo (M, F, E)
         // =========================
-        $sexo = 'M'; 
-        if ($cuitLimpio) {
-            $prefijo = substr($cuitLimpio, 0, 2);
-            if ($prefijo === '27') {
-                $sexo = 'F';
-            } elseif (in_array($prefijo, ['30', '33', '34'])) {
-                $sexo = 'E';
-            }
+        $sexo = 'M';
+        $prefijo = substr($cuitLimpio, 0, 2);
+
+        if ($prefijo === '27') {
+            $sexo = 'F';
+        } elseif (in_array($prefijo, ['30', '33', '34'])) {
+            $sexo = 'E';
         }
 
         // =========================
-        // 4. Construcción del Body
+        // 4. Construcción del Body (MINIMALISTA Y SEGURO)
         // =========================
         $body = [
-            'cod_cli'           => '', 
-            'cli_tipo_id'       => 1, 
-            'rz'                => $datos['nombre'] ?? 'Cliente Web',
-            'nom_fantasia'      => $datos['nombre'] ?? 'Cliente Web',
-            'cuit'              => $cuitLimpio,
-            'iva_id'            => $ivaId,
-            'tipo_iibb_id'      => 0,
-            'sexo'              => $sexo, 
-            'copia_nota_cpr'    => false, 
-            'muestra_nota_cpr'  => false,
-            'crediticio'        => false,
-            'ctacorrentista'    => false,
-            'ctacte_tipo_id'    => 1, 
-            'discrimina_bonif'  => false,
-            'es_cli_generico'   => false,
+            'cod_cli'          => '',
+            'cli_tipo_id'      => 1,
+            'rz'               => $datos['nombre'] ?? 'Cliente Web',
+            'nom_fantasia'     => $datos['nombre'] ?? 'Cliente Web',
+            'cuit'             => $cuitLimpio,
+            'iva_id'           => $ivaId,
+            'sexo'             => $sexo,
+            'crediticio'       => false,
+            'ctacorrentista'   => false,
+            "ctacte_tipo_id" => 1,
+            'discrimina_bonif' => false,
+            'es_cli_generico'  => false,
+            'copia_nota_cpr'   => false,
+            'muestra_nota_cpr' => false,
         ];
 
         // =========================
@@ -363,13 +369,12 @@ protected function client()
         // =========================
         if (!empty($datos['telefono'])) {
             $telefonoLimpio = preg_replace('/[^0-9]/', '', $datos['telefono']);
+
             $body['telefonos'] = [[
                 'numero'        => $telefonoLimpio,
-                'tel_clasif_id' => 'CEL', 
-                'por_defecto'   => true, 
+                'tel_clasif_id' => 'CEL',
+                'por_defecto'   => true,
             ]];
-        } else {
-            $body['telefonos'] = [];
         }
 
         // =========================
@@ -378,36 +383,22 @@ protected function client()
         if (!empty($datos['email'])) {
             $body['emails'] = [[
                 'email'           => $datos['email'],
-                'email_clasif_id' => 'PE', 
+                'email_clasif_id' => 'PE',
                 'por_defecto'     => true,
             ]];
-        } else {
-            $body['emails'] = [];
         }
 
         // =========================
-        // 7. Domicilios
+        // 7. Domicilio (OBLIGATORIO PARA FACTURAR)
         // =========================
-        $locId = 77; 
-        if (!empty($datos['envio'])) {
-            $envio = $datos['envio'];
-            $calle = $envio['calle'] ?? 'WEB';
-            $nro   = (int) ($envio['numero'] ?? 0);
-            $cp    = $envio['codigo_postal'] ?? '';
-            $clasif = 'DE'; 
-        } else {
-            $calle = 'RETIRO WEB';
-            $nro   = 0;
-            $cp    = '';
-            $clasif = 'DP'; 
-        }
+        $locId = (int) config('services.paljet.web_loc_id', 174);
 
         $body['domicilios'] = [[
-            'calle'         => $calle,
-            'calle_nro'     => $nro,
-            'cp_nuevo'      => $cp,
-            'dom'           => trim("$calle $nro"),
-            'dom_clasif_id' => $clasif,
+            'calle'         => 'WEB',
+            'calle_nro'     => 0,
+            'cp_nuevo'      => '',
+            'dom'           => 'WEB 0',
+            'dom_clasif_id' => 'DP',
             'loc_id'        => $locId,
             'por_defecto'   => true,
             'entre_calle'   => '',
@@ -433,37 +424,32 @@ protected function client()
             }
 
             $data = $response->json();
-            
-            // --- EXTRACCIÓN DEL ID (ACTUALIZADA SEGÚN TU ÚLTIMO LOG) ---
+
             $newId = null;
 
-            // 1. Intentamos el campo exacto que vino en tu log: "cli_id"
             if (isset($data['cli_id'])) {
                 $newId = $data['cli_id'];
-            }
-            // 2. Backup: HAL-JSON (clienteResources)
-            elseif (isset($data['_embedded']['clienteResources'][0]['cliId'])) {
-                $newId = $data['_embedded']['clienteResources'][0]['cliId'];
-            } 
-            // 3. Backup: Otras variantes comunes
-            elseif (isset($data['id'])) {
-                $newId = $data['id'];
-            } 
-            elseif (isset($data['cliId'])) {
+            } elseif (isset($data['cliId'])) {
                 $newId = $data['cliId'];
+            } elseif (isset($data['id'])) {
+                $newId = $data['id'];
+            } elseif (isset($data['_embedded']['clienteResources'][0]['cliId'])) {
+                $newId = $data['_embedded']['clienteResources'][0]['cliId'];
             }
 
             if ($newId) {
-                Log::info('Paljet WS - Cliente creado y ID capturado', [
+                Log::info('Paljet WS - Cliente creado correctamente', [
                     'paljet_id' => $newId,
-                    'nombre'    => $body['rz'],
+                    'cuit'      => $cuitLimpio,
                 ]);
                 return (int) $newId;
             }
 
-            Log::error('Paljet WS - ID no hallado en la respuesta', ['respuesta' => $data]);
-            return null;
+            Log::error('Paljet WS - Cliente creado pero ID no detectado', [
+                'response' => $data
+            ]);
 
+            return null;
         } catch (\Throwable $e) {
             Log::error('Paljet WS - Excepción al crear cliente', [
                 'message' => $e->getMessage(),
@@ -473,336 +459,418 @@ protected function client()
         }
     }
 
-private function buscarClienteEnPaljet(string $campo, string $valor): ?int
-{
-    try {
-        $response = $this->client()->get("{$this->baseUrl}/clientes", [
-            $campo => $valor,
-            'size' => 1,
-            'page' => 0,
-        ]);
+    private function buscarClienteEnPaljet(string $campo, string $valor): ?int
+    {
+        try {
+            $response = $this->client()->get("{$this->baseUrl}/clientes", [
+                $campo => $valor,
+                'size'  => 1,
+                'page'  => 0,
+            ]);
 
-        if (!$response->successful()) {
+            if (!$response->successful()) {
+                return null;
+            }
+
+            $json = $response->json();
+
+            $clientes = $json['_embedded']['clienteResources'] ?? [];
+
+            if (empty($clientes)) {
+                return null;
+            }
+
+            $cliente = $clientes[0];
+
+            return isset($cliente['cliId'])
+                ? (int) $cliente['cliId']
+                : null;
+        } catch (\Throwable $e) {
             return null;
         }
-
-        $content = $response->json()['content'] ?? [];
-
-        if (empty($content)) {
-            return null;
-        }
-
-        $cliente = $content[0];
-
-        // 🔥 Captura robusta del ID
-        if (isset($cliente['cli_id'])) {
-            return (int) $cliente['cli_id'];
-        }
-
-        if (isset($cliente['cliId'])) {
-            return (int) $cliente['cliId'];
-        }
-
-        if (isset($cliente['id'])) {
-            return (int) $cliente['id'];
-        }
-
-        return null;
-
-    } catch (\Throwable $e) {
-        return null;
     }
-}
 
     /**
      * Envía un pedido web a Paljet.
      * $items = [['art_id' => 123, 'cantidad' => 2, 'pr_final' => 125000.00], ...]
      * Retorna el ID del pedido en Paljet o null si falla.
      */
-/**
- * Envía un pedido web a Paljet.
- */
-/**
- * Envía un pedido web a Paljet con blindaje de datos dinámicos y logs detallados.
- * * @param int $paljetCliId
- * @param array $items
- * @param int $domicilioId
- * @param string|null $nota
- * @param int|null $condVtaId
- * @return int|null ID del pedido generado en Paljet
- */
-public function enviarPedidoWeb(
-    
-    int $paljetCliId,
-    array $items,
-    int $domicilioId,
-    string $nota = null,
-    int $condVtaId = null
-): ?int {
-    if (empty($items)) {
-        Log::warning('Paljet WS - Intento de enviar pedido sin items', [
-            'cliente' => $paljetCliId
-        ]);
-        return null;
-    }
-    Log::error('ENTRE A LA VERSION NUEVA DE ENVIAR PEDIDO WEB');
-    $notifEmail = config('services.paljet.notif_email');
+    /**
+     * Envía un pedido web a Paljet.
+     */
+    /**
+     * Envía un pedido web a Paljet con blindaje de datos dinámicos y logs detallados.
+     * * @param int $paljetCliId
+     * @param array $items
+     * @param int $domicilioId
+     * @param string|null $nota
+     * @param int|null $condVtaId
+     * @return int|null ID del pedido generado en Paljet
+     */
+    public function enviarPedidoWeb(
+        int $paljetCliId,
+        array $items,
+        int $domicilioId,
+        string $nota = null,
+        int $condVtaId = null
+    ): ?int {
 
-    // Construcción del cuerpo del pedido
-    // dep_id: 8 apunta a Playa Unión (PV 3)
-    // loc_id: 174 apunta a la localidad Playa Unión
-    $body = [
-        'cliente'     => $paljetCliId,
-        'dep_id'      => $this->depId,
-        'cond_vta_id' => $condVtaId ?? (int) config('services.paljet.web_cond_vta', 1),
-        'loc_id'      => (int) config('services.paljet.web_loc_id', 174),
-        'domicilio'   => $domicilioId,
-        'detalle'     => array_map(function ($i) {
-            return [
-                'articulo' => (int) $i['art_id'],
-                'cantidad' => (float) $i['cantidad'],
-                'prFinal'  => (float) $i['pr_final'],
-            ];
-        }, $items),
-    ];
+        if (empty($items)) {
+            Log::warning('Paljet WS - Intento de enviar pedido sin items', [
+                'cliente' => $paljetCliId
+            ]);
+            return null;
+        }
 
-    if ($notifEmail) {
-        $body['mailDestinatarios'] = $notifEmail;
-    }
+        $notifEmail = config('services.paljet.notif_email');
 
-    if ($nota) {
-        $body['nota'] = [$nota];
-    }
+        $body = [
+            'aplica_dto_nivel' => true,
+            'cliente'          => $paljetCliId,
+            'cond_vta_id'      => $condVtaId ?? (int) config('services.paljet.web_cond_vta', 1),
+            'domicilio'        => $domicilioId,
+            'loc_id'           => (int) config('services.paljet.web_loc_id', 174),
+            'detalle'          => array_map(function ($i) {
+                return [
+                    'articulo'  => (int) $i['art_id'],
+                    'cantidad'  => (float) $i['cantidad'],
+                    'cantBonif' => 0,
+                    'listaId'   => 0,
+                ];
+            }, $items),
+        ];
 
-    try {
-        Log::info('Paljet WS - Iniciando envío de pedido web', [
-            'url'  => "{$this->baseUrl}/pedido/web",
-            'body' => $body,
-        ]);
+        if ($notifEmail) {
+            $body['mailDestinatarios'] = $notifEmail;
+        }
 
-        $response = $this->client()->post("{$this->baseUrl}/pedido/web", $body);
+        if ($nota) {
+            $body['nota'] = [$nota];
+        }
 
-        $status = $response->status();
-        $raw    = $response->body();
+        try {
 
-        Log::info('Paljet WS - Respuesta recibida', [
-            'status' => $status,
-            'body'   => $raw,
-        ]);
+            Log::info('Paljet WS - Iniciando envío de pedido web', [
+                'url'  => "{$this->baseUrl}/pedido/web",
+                'body' => $body,
+            ]);
 
-        if (!$response->successful()) {
-            Log::error('Paljet WS - El servidor rechazó el pedido web', [
+            $response = $this->client()->post("{$this->baseUrl}/pedido/web", $body);
+
+            $status = $response->status();
+            $raw    = $response->body();
+
+            Log::info('Paljet WS - Respuesta recibida', [
                 'status' => $status,
                 'body'   => $raw,
-                'sent'   => $body,
             ]);
+
+            if (!$response->successful()) {
+                Log::error('Paljet WS - El servidor rechazó el pedido web', [
+                    'status' => $status,
+                    'body'   => $raw,
+                    'sent'   => $body,
+                ]);
+                return null;
+            }
+
+            $data = $response->json();
+
+            // ✅ CAPTURA REAL DEL CPR_ID
+            $cprId = data_get($data, 'pedido.cpr_id')
+                ?? data_get($data, 'cpr_id')
+                ?? data_get($data, 'pedido.id')
+                ?? data_get($data, 'id')
+                ?? data_get($data, 'pedido_id')
+                ?? data_get($data, 'ped_id');
+
+            if ($cprId) {
+
+                // ⚠️ Si viene bloque "error" es por el mail, NO por el pedido
+                if (isset($data['error'])) {
+                    Log::warning('Paljet WS - Pedido emitido pero falló el mail', [
+                        'cpr_id'    => $cprId,
+                        'message'   => data_get($data, 'error.message'),
+                        'developer' => data_get($data, 'error.developerMesasge'),
+                    ]);
+                }
+
+                Log::info('Paljet WS - Pedido creado correctamente', [
+                    'cpr_id'   => $cprId,
+                    'pto_vta'  => data_get($data, 'pedido.pto_vta'),
+                    'numero'   => data_get($data, 'pedido.numero'),
+                    'letra'    => data_get($data, 'pedido.letra'),
+                ]);
+
+                return (int) $cprId;
+            }
+
+            Log::warning('Paljet WS - Respuesta 200 pero sin cpr_id', [
+                'response' => $data
+            ]);
+
+            return null;
+        } catch (\Throwable $e) {
+
+            Log::error('Paljet WS - Excepción crítica durante el POST del pedido', [
+                'message' => $e->getMessage(),
+                'line'    => $e->getLine(),
+                'sent'    => $body,
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Genera el pedido web en Paljet a partir de un Pedido local.
+     *
+     * @param  \App\Models\Pedido  $pedido
+     * @return int|null  ID del pedido en Paljet, o null si falla.
+     */
+    /**
+     * Genera el pedido web en Paljet a partir de un Pedido local.
+     *
+     * @param  \App\Models\Pedido  $pedido
+     * @return int|null  ID del pedido en Paljet, o null si falla.
+     */
+    public function generarFacturaDePedido(\App\Models\Pedido $pedido): ?int
+    {
+
+        Log::info("Paljet - Iniciando generación factura pedido {$pedido->id}");
+
+        // =========================
+        // 🔒 IDEMPOTENCIA
+        // =========================
+
+        if (!empty($pedido->paljet_pedido_id)) {
+            Log::info("Paljet - Pedido ya generado previamente", [
+                'pedido_id' => $pedido->id,
+                'paljet_pedido_id' => $pedido->paljet_pedido_id
+            ]);
+
+            return (int) $pedido->paljet_pedido_id;
+        }
+
+
+        // =========================
+        // 1. Construir items Paljet
+        // =========================
+
+        $itemsDirectos = \App\Models\PedidoItem::where('pedido_id', $pedido->id)
+            ->whereNotNull('paljet_art_id')
+            ->get()
+            ->map(fn($i) => [
+                'art_id'   => (int) $i->paljet_art_id,
+                'cantidad' => (float) $i->cantidad,
+                'pr_final' => (float) $i->precio_unitario,
+            ]);
+
+        $itemsContenedor = \Illuminate\Support\Facades\DB::table('pedido_items')
+            ->join('productos', 'pedido_items.producto_id', '=', 'productos.id')
+            ->where('pedido_items.pedido_id', $pedido->id)
+            ->whereNull('pedido_items.paljet_art_id')
+            ->whereNotNull('productos.paljet_art_id')
+            ->select(
+                'pedido_items.cantidad',
+                'pedido_items.precio_unitario',
+                'productos.paljet_art_id as paljet_art_id'
+            )
+            ->get()
+            ->map(fn($i) => [
+                'art_id'   => (int) $i->paljet_art_id,
+                'cantidad' => (float) $i->cantidad,
+                'pr_final' => (float) $i->precio_unitario,
+            ]);
+
+        $paljetItems = $itemsDirectos
+            ->merge($itemsContenedor)
+            ->values()
+            ->all();
+
+        Log::info("Paljet - Items construidos", [
+            'pedido_id' => $pedido->id,
+            'items'     => $paljetItems
+        ]);
+
+        if (empty($paljetItems)) {
+            Log::warning("Paljet - Pedido {$pedido->id} sin artículos Paljet.");
             return null;
         }
 
-        $data = $response->json();
-
-        // 🔥 Captura robusta del ID del pedido (Paljet puede variar el nombre del campo)
-        $idHallado = null;
-
-        if (isset($data['id'])) {
-            $idHallado = (int) $data['id'];
-        } elseif (isset($data['pedido_id'])) {
-            $idHallado = (int) $data['pedido_id'];
-        } elseif (isset($data['ped_id'])) {
-            $idHallado = (int) $data['ped_id'];
-        }
-
-        if ($idHallado) {
-            Log::info("Paljet WS - Pedido creado exitosamente", ['paljet_pedido_id' => $idHallado]);
-            return $idHallado;
-        }
-
-        Log::warning('Paljet WS - El pedido se envió pero no se reconoció el ID en el JSON', [
-            'response' => $data
+        // =========================
+        // 2. Buscar / Crear cliente
+        // =========================
+        Log::info('DEBUG PEDIDO PARA PALJET', [
+            'pedido_id' => $pedido->id,
+            'cuit_contacto' => $pedido->cuit_contacto,
+            'condicion_iva' => $pedido->condicion_iva_contacto,
+            'email' => $pedido->email_contacto,
         ]);
-
-        return null;
-
-    } catch (\Throwable $e) {
-        Log::error('Paljet WS - Excepción crítica durante el POST del pedido', [
-            'message' => $e->getMessage(),
-            'line'    => $e->getLine(),
-            'sent'    => $body,
-        ]);
-        return null;
-    }
-}
-
-/**
- * Genera el pedido web en Paljet a partir de un Pedido local.
- *
- * @param  \App\Models\Pedido  $pedido
- * @return int|null  ID del pedido en Paljet, o null si falla.
- */
-/**
- * Genera el pedido web en Paljet a partir de un Pedido local.
- *
- * @param  \App\Models\Pedido  $pedido
- * @return int|null  ID del pedido en Paljet, o null si falla.
- */
-public function generarFacturaDePedido(\App\Models\Pedido $pedido): ?int
-{
-    Log::info("Paljet - Iniciando generación factura pedido {$pedido->id}");
-
-    // =========================
-    // 1. Construir items Paljet
-    // =========================
-
-    $itemsDirectos = \App\Models\PedidoItem::where('pedido_id', $pedido->id)
-        ->whereNotNull('paljet_art_id')
-        ->get()
-        ->map(fn($i) => [
-            'art_id'   => (int) $i->paljet_art_id,
-            'cantidad' => (float) $i->cantidad,
-            'pr_final' => (float) $i->precio_unitario,
-        ]);
-
-    $itemsContenedor = \Illuminate\Support\Facades\DB::table('pedido_items')
-        ->join('productos', 'pedido_items.producto_id', '=', 'productos.id')
-        ->where('pedido_items.pedido_id', $pedido->id)
-        ->whereNull('pedido_items.paljet_art_id')
-        ->whereNotNull('productos.paljet_art_id')
-        ->select(
-            'pedido_items.cantidad',
-            'pedido_items.precio_unitario',
-            'productos.paljet_art_id as paljet_art_id'
-        )
-        ->get()
-        ->map(fn($i) => [
-            'art_id'   => (int) $i->paljet_art_id,
-            'cantidad' => (float) $i->cantidad,
-            'pr_final' => (float) $i->precio_unitario,
-        ]);
-
-    $paljetItems = $itemsDirectos
-        ->merge($itemsContenedor)
-        ->values()
-        ->all();
-
-    Log::info("Paljet - Items construidos", [
-        'pedido_id' => $pedido->id,
-        'items'     => $paljetItems
-    ]);
-
-    if (empty($paljetItems)) {
-        Log::warning("Paljet - Pedido {$pedido->id} sin artículos Paljet.");
-        return null;
-    }
-
-    // =========================
-    // 2. Buscar / Crear cliente
-    // =========================
-
-    $paljetCliId = $this->buscarClientePorCuitODni(
-        $pedido->cuit_contacto,
-        $pedido->dni_contacto
-    );
-
-    if (!$paljetCliId) {
-        Log::info("Paljet - Cliente no existe, creando...");
-
-        $paljetCliId = $this->crearCliente([
-            'nombre'        => trim($pedido->nombre_contacto),
-            'email'         => $pedido->email_contacto,
-            'telefono'      => $pedido->telefono_contacto,
-            'cuit'          => $pedido->cuit_contacto,
-            'dni'           => $pedido->dni_contacto,
-            'condicion_iva' => $pedido->condicion_iva_contacto ?? 'Consumidor Final',
-        ]);
-    }
-
-    Log::info("Paljet - Cliente detectado", [
-        'pedido_id'   => $pedido->id,
-        'paljetCliId' => $paljetCliId
-    ]);
-
-    if (!$paljetCliId) {
-        Log::error("Paljet - No se pudo obtener/crear cliente para pedido {$pedido->id}");
-        return null;
-    }
-
-    // =========================
-    // 3. Obtener domicilio
-    // =========================
-
-    $paljetDomId = $this->obtenerDomicilioIdDefault($paljetCliId);
-
-    Log::info("Paljet - Domicilio detectado", [
-        'cliente' => $paljetCliId,
-        'dom_id'  => $paljetDomId
-    ]);
-
-    if (!$paljetDomId) {
-        Log::error("Paljet - Cliente {$paljetCliId} sin domicilio válido.");
-        return null;
-    }
-
-    // =========================
-    // 4. Obtener condición venta
-    // =========================
-
-    $paljetCondVtaId = $this->obtenerCondVtaIdDefault($paljetCliId);
-
-    Log::info("Paljet - Condición venta detectada", [
-        'cliente'     => $paljetCliId,
-        'cond_vta_id' => $paljetCondVtaId
-    ]);
-
-    if (!$paljetCondVtaId) {
-        Log::error("Paljet - Cliente {$paljetCliId} sin condición de venta válida.");
-        return null;
-    }
-
-    // =========================
-    // 5. Enviar pedido web
-    // =========================
-
-    try {
-
-        $paljetPedidoId = $this->enviarPedidoWeb(
-            $paljetCliId,
-            $paljetItems,
-            $paljetDomId,
-            $pedido->nota_cliente ?: null,
-            $paljetCondVtaId
+        $paljetCliId = $this->buscarClientePorCuitODni(
+            $pedido->cuit_contacto,
+            $pedido->dni_contacto
         );
 
-        Log::info("Paljet - Resultado enviarPedidoWeb", [
-            'pedido_id' => $pedido->id,
-            'resultado' => $paljetPedidoId
+        if (!$paljetCliId) {
+            Log::info("Paljet - Cliente no existe, creando...");
+
+            $paljetCliId = $this->crearCliente([
+                'nombre'        => trim($pedido->nombre_contacto),
+                'email'         => $pedido->email_contacto,
+                'telefono'      => $pedido->telefono_contacto,
+                'cuit'          => $pedido->cuit_contacto,
+                'dni'           => $pedido->dni_contacto,
+                'condicion_iva' => $pedido->condicion_iva_contacto ?? 'Consumidor Final',
+            ]);
+        }
+
+        Log::info("Paljet - Cliente detectado", [
+            'pedido_id'   => $pedido->id,
+            'paljetCliId' => $paljetCliId
         ]);
 
-        if (!$paljetPedidoId) {
-            Log::error("Paljet - Pedido rechazado por API", [
-                'pedido_id' => $pedido->id
-            ]);
+        if (!$paljetCliId) {
+            Log::error("Paljet - No se pudo obtener/crear cliente para pedido {$pedido->id}");
             return null;
         }
 
-        $pedido->update(['paljet_pedido_id' => $paljetPedidoId]);
+        // =========================
+        // 3. Obtener domicilio
+        // =========================
 
-        Log::info("Paljet - Pedido web enviado OK", [
-            'pedido_id'        => $pedido->id,
-            'paljet_pedido_id' => $paljetPedidoId,
+        $paljetDomId = $this->obtenerDomicilioIdDefault($paljetCliId);
+
+        Log::info("Paljet - Domicilio detectado", [
+            'cliente' => $paljetCliId,
+            'dom_id'  => $paljetDomId
         ]);
 
-        return $paljetPedidoId;
+        if (!$paljetDomId) {
+            Log::error("Paljet - Cliente {$paljetCliId} sin domicilio válido.");
+            return null;
+        }
 
-    } catch (\Throwable $e) {
+        // =========================
+        // 4. Obtener condición venta
+        // =========================
 
-        Log::error("Paljet - Excepción al enviar pedido", [
-            'pedido_id' => $pedido->id,
-            'error'     => $e->getMessage()
+        // 🔎 Detectar si el pedido fue pagado con MercadoPago
+        $medioMp = DB::table('medios_pago')
+            ->where('codigo', 'mercadopago')
+            ->first();
+
+        $pagoMp = null;
+
+        if ($medioMp) {
+            $pagoMp = \App\Models\Pago::where('pedido_id', $pedido->id)
+                ->where('medio_pago_id', $medioMp->id)
+                ->where('estado', 'aprobado')
+                ->first();
+        }
+
+        if (!$pedido->medio_pago_id) {
+            throw new \Exception("Pedido {$pedido->id} sin medio_pago_id definido.");
+        }
+
+        $medioPagoCodigo = DB::table('medios_pago')
+            ->where('id', $pedido->medio_pago_id)
+            ->value('codigo');
+
+        if (!$medioPagoCodigo) {
+            throw new \Exception("medio_pago_id {$pedido->medio_pago_id} no válido.");
+        }
+
+        $paljetCondVtaId = $this->resolverCondicionVenta($medioPagoCodigo);
+
+        Log::info("Paljet - Condición venta seleccionada", [
+            'cliente'     => $paljetCliId,
+            'cond_vta_id' => $paljetCondVtaId
         ]);
 
-        return null;
+        if (!$paljetCondVtaId) {
+            Log::error("Paljet - Cliente {$paljetCliId} sin condición de venta válida.");
+            return null;
+        }
+
+        // =========================
+        // 5. Enviar pedido web
+        // =========================
+
+        try {
+
+            $paljetPedidoId = $this->enviarPedidoWeb(
+                $paljetCliId,
+                $paljetItems,
+                $paljetDomId,
+                $pedido->nota_cliente ?: null,
+                $paljetCondVtaId
+            );
+
+            Log::info("Paljet - Resultado enviarPedidoWeb", [
+                'pedido_id' => $pedido->id,
+                'resultado' => $paljetPedidoId
+            ]);
+
+            // 🔥 Si Paljet devuelve null / false / 0 → explotar
+            if (empty($paljetPedidoId) || !is_numeric($paljetPedidoId)) {
+
+                Log::error("Paljet - Pedido rechazado por API", [
+                    'pedido_id' => $pedido->id,
+                    'respuesta' => $paljetPedidoId
+                ]);
+
+                throw new \Exception("Paljet rechazó el pedido {$pedido->id}");
+            }
+
+            // Guardar ID ERP
+            $pedido->update([
+                'paljet_pedido_id' => (int) $paljetPedidoId
+            ]);
+
+            Log::info("Paljet - Pedido web enviado OK", [
+                'pedido_id'        => $pedido->id,
+                'paljet_pedido_id' => $paljetPedidoId,
+            ]);
+
+            return (int) $paljetPedidoId;
+        } catch (\Throwable $e) {
+
+            Log::error("Paljet - Excepción crítica al enviar pedido", [
+                'pedido_id' => $pedido->id,
+                'error'     => $e->getMessage(),
+                'trace'     => $e->getTraceAsString()
+            ]);
+
+            // 🔥 MUY IMPORTANTE:
+            // NO devolver null
+            // NO silenciar
+            // Dejar que el error suba al webhook
+
+            throw $e;
+        }
     }
-}
+
+
+    private function resolverCondicionVenta(string $medioPago): int
+    {
+        $map = config('services.paljet.condiciones');
+
+        // Normalizar entrada (clave para evitar bugs)
+        $medioPago = strtolower(trim($medioPago));
+
+        if (!isset($map[$medioPago])) {
+            throw new \Exception("Medio de pago no mapeado en config: {$medioPago}");
+        }
+
+        $condicionId = (int) $map[$medioPago];
+
+        if (!$condicionId) {
+            throw new \Exception("Condición de venta inválida para medio: {$medioPago}");
+        }
+
+        return $condicionId;
+    }
 
     /**
      * Obtiene precio final y disponibilidad de un artículo para validar un pedido web.
@@ -1018,7 +1086,7 @@ public function generarFacturaDePedido(\App\Models\Pedido $pedido): ?int
                     'descripcion'     => $art['descripcion'] ?? null,
                     'marca'           => is_array($marca)   ? ($marca['nombre']   ?? null) : $marca,
                     'familia'         => is_array($familia) ? ($familia['nombre'] ?? null) : $familia,
-                    'stock_disponible'=> 0,
+                    'stock_disponible' => 0,
                 ];
             }, $sinStock);
 
@@ -1075,8 +1143,8 @@ public function generarFacturaDePedido(\App\Models\Pedido $pedido): ?int
             return [];
         }
     }
-    
-/**
+
+    /**
      * Devuelve los artículos de Paljet que están en la lista de ofertas local.
      * Filtra automáticamente los que tienen precio <= 0.
      *
@@ -1184,86 +1252,106 @@ public function generarFacturaDePedido(\App\Models\Pedido $pedido): ?int
     }
 
     public function obtenerDomicilioIdDefault(int $paljetCliId): ?int
-{
-    try {
-        Log::info("Paljet - Consultando cliente para domicilio", [
-            'cliente_id' => $paljetCliId
-        ]);
+    {
+        try {
+            Log::info("Paljet - Consultando cliente para domicilio", [
+                'cliente_id' => $paljetCliId
+            ]);
 
-        $response = $this->client()->get("{$this->baseUrl}/clientes/{$paljetCliId}");
+            $response = $this->client()->get("{$this->baseUrl}/clientes/{$paljetCliId}");
 
-        Log::info("Paljet - Respuesta cliente domicilio", [
-            'status' => $response->status(),
-            'body'   => $response->body(),
-        ]);
+            Log::info("Paljet - Respuesta cliente domicilio", [
+                'status' => $response->status(),
+                'body'   => $response->body(),
+            ]);
 
-        if (!$response->successful()) {
+            if (!$response->successful()) {
+                return null;
+            }
+
+            $data = $response->json();
+            $domicilios = $data['domicilios'] ?? [];
+
+            Log::info("Paljet - Domicilios encontrados", [
+                'domicilios' => $domicilios
+            ]);
+
+            foreach ($domicilios as $dom) {
+                if (($dom['por_defecto'] ?? '') === 'S'
+                    || ($dom['por_defecto'] ?? false) === true
+                ) {
+                    return (int) $dom['dom_id'];
+                }
+            }
+
+            return !empty($domicilios) ? (int) $domicilios[0]['dom_id'] : null;
+        } catch (\Throwable $e) {
+            Log::error("Paljet - Excepción obteniendo domicilio", [
+                'error' => $e->getMessage()
+            ]);
             return null;
         }
+    }
 
-        $data = $response->json();
-        $domicilios = $data['domicilios'] ?? [];
+    public function obtenerCondVtaIdDefault(int $paljetCliId): int
+    {
+        try {
+            Log::info("Paljet - Consultando cliente para condición venta", [
+                'cliente_id' => $paljetCliId
+            ]);
 
-        Log::info("Paljet - Domicilios encontrados", [
-            'domicilios' => $domicilios
-        ]);
+            $response = $this->client()->get("{$this->baseUrl}/clientes/{$paljetCliId}");
 
-        foreach ($domicilios as $dom) {
-            if (($dom['por_defecto'] ?? '') === 'S'
-                || ($dom['por_defecto'] ?? false) === true) {
-                return (int) $dom['dom_id'];
+            Log::info("Paljet - Respuesta cliente condición venta", [
+                'status' => $response->status(),
+                'body'   => $response->body(),
+            ]);
+
+            if (!$response->successful()) return 1;
+
+            $data = $response->json();
+            $condiciones = $data['condiciones_venta'] ?? [];
+
+            Log::info("Paljet - Condiciones encontradas", [
+                'condiciones' => $condiciones
+            ]);
+
+            foreach ($condiciones as $cond) {
+                if (($cond['por_defecto'] ?? '') === 'S'
+                    || ($cond['por_defecto'] ?? false) === true
+                ) {
+                    return (int) $cond['id_cond'];
+                }
             }
+
+            return !empty($condiciones)
+                ? (int) $condiciones[0]['id_cond']
+                : 1;
+        } catch (\Throwable $e) {
+            Log::error("Paljet - Excepción obteniendo condición venta", [
+                'error' => $e->getMessage()
+            ]);
+            return 1;
         }
+    }
 
-        return !empty($domicilios) ? (int) $domicilios[0]['dom_id'] : null;
+    /**
+     * Registra un pedido confirmado en Paljet (fuera de la transacción de pago).
+     *
+     * Soft-falla ante cualquier error: loguea y retorna null en lugar de lanzar.
+     * Si tiene éxito, guarda paljet_pedido_id en la tabla pedidos y retorna el ID.
+     *
+     * @return int|null  ID del pedido en Paljet, o null si no se pudo registrar.
+     */
+public function registrarPedidoConfirmado(int $pedidoId): ?int
+{
+    $pedido = \App\Models\Pedido::find($pedidoId);
 
-    } catch (\Throwable $e) {
-        Log::error("Paljet - Excepción obteniendo domicilio", [
-            'error' => $e->getMessage()
-        ]);
+    if (!$pedido) {
+        Log::error("Pedido #{$pedidoId} no existe.");
         return null;
     }
-}
 
-public function obtenerCondVtaIdDefault(int $paljetCliId): int
-{
-    try {
-        Log::info("Paljet - Consultando cliente para condición venta", [
-            'cliente_id' => $paljetCliId
-        ]);
-
-        $response = $this->client()->get("{$this->baseUrl}/clientes/{$paljetCliId}");
-
-        Log::info("Paljet - Respuesta cliente condición venta", [
-            'status' => $response->status(),
-            'body'   => $response->body(),
-        ]);
-
-        if (!$response->successful()) return 1;
-
-        $data = $response->json();
-        $condiciones = $data['condiciones_venta'] ?? [];
-
-        Log::info("Paljet - Condiciones encontradas", [
-            'condiciones' => $condiciones
-        ]);
-
-        foreach ($condiciones as $cond) {
-            if (($cond['por_defecto'] ?? '') === 'S'
-                || ($cond['por_defecto'] ?? false) === true) {
-                return (int) $cond['id_cond'];
-            }
-        }
-
-        return !empty($condiciones)
-            ? (int) $condiciones[0]['id_cond']
-            : 1;
-
-    } catch (\Throwable $e) {
-        Log::error("Paljet - Excepción obteniendo condición venta", [
-            'error' => $e->getMessage()
-        ]);
-        return 1;
-    }
+    return $this->generarFacturaDePedido($pedido);
 }
 }

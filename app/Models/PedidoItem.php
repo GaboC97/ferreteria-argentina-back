@@ -13,6 +13,7 @@ class PedidoItem extends Model
     protected $fillable = [
         'pedido_id',
         'producto_id',
+        'paljet_art_id',
         'nombre_producto',
         'precio_unitario',
         'cantidad',

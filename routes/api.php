@@ -16,6 +16,8 @@ use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\DireccionController;
 use App\Http\Controllers\ContactoController;
 use App\Http\Controllers\PostulacionController;
+use App\Models\Pedido;
+use App\Services\PaljetService;
 
 // =====================
 // AUTH (PÚBLICAS) - Rate limited para prevenir brute force
@@ -119,4 +121,27 @@ Route::middleware(['auth:sanctum', 'admin'])->group(function () {
     Route::post('/pedidos/{id}/confirmar-pago', [PedidoController::class, 'confirmarPago']);
     Route::post('/pedidos/{id}/rechazar-pago', [PedidoController::class, 'rechazarPago']);
     Route::get('/pedidos/{id}/comprobante', [PedidoController::class, 'verComprobante']);
+});
+
+
+
+
+
+
+Route::post('/__test/paljet/{pedido}', function ($pedidoId) {
+
+    // 🔒 SOLO LOCAL
+    if (!app()->environment('local')) {
+        abort(403, 'Endpoint solo disponible en entorno local');
+    }
+
+    $pedido = Pedido::findOrFail($pedidoId);
+
+    $paljetId = app(PaljetService::class)
+        ->generarFacturaDePedido($pedido);
+
+    return response()->json([
+        'pedido_id_local'   => $pedido->id,
+        'paljet_pedido_id'  => $paljetId,
+    ]);
 });
