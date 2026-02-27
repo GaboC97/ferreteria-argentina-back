@@ -17,3 +17,6 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+paljet_test.php
+responsev2api.txt
+*.test.php
