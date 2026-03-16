@@ -38,6 +38,10 @@ Tu pedido **#{{ $pedido->id }}** fue **confirmado** y el pago se acreditó corre
 **Referencias:** {{ $pedido->envio->referencias }}
 @endif
 
+@component('mail::panel')
+Tu pedido será entregado en un plazo de **48 a 72 horas hábiles** desde la confirmación del pago.
+@endcomponent
+
 @if($pedido->envio->empresa)
 **Empresa:** {{ $pedido->envio->empresa }}
 @endif

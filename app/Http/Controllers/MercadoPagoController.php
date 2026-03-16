@@ -34,7 +34,7 @@ class MercadoPagoController extends Controller
 
     if ($pedido->estado !== 'pendiente_pago') {
         return response()->json([
-            'message' => 'El pedido no está en estado pendiente_pago'
+            'message' => 'Este pedido no puede pagarse en este momento.'
         ], 409);
     }
 
@@ -53,7 +53,7 @@ class MercadoPagoController extends Controller
 
     if ($items->isEmpty()) {
         return response()->json([
-            'message' => 'El pedido no tiene items'
+            'message' => 'El pedido no tiene productos.'
         ], 409);
     }
 
@@ -63,9 +63,8 @@ class MercadoPagoController extends Controller
 
         if ($price <= 0) {
             return response()->json([
-                'message' => 'Producto sin precio válido para Mercado Pago',
+                'message' => 'Uno o más productos no tienen precio válido.',
                 'nombre' => $it->nombre,
-                'precio_unitario' => $it->precio_unitario,
             ], 422);
         }
     }
@@ -76,7 +75,7 @@ class MercadoPagoController extends Controller
 
     if (!$medioMp) {
         return response()->json([
-            'message' => 'Medio de pago Mercado Pago no existe'
+            'message' => 'El medio de pago no está disponible en este momento.'
         ], 500);
     }
 
@@ -84,7 +83,7 @@ class MercadoPagoController extends Controller
 
     if (!$mpToken) {
         return response()->json([
-            'message' => 'MP_ACCESS_TOKEN no configurado'
+            'message' => 'El servicio de pagos no está disponible en este momento.'
         ], 500);
     }
 
@@ -166,7 +165,7 @@ class MercadoPagoController extends Controller
             ]);
 
         return response()->json([
-            'message' => 'Error creando preferencia MP'
+            'message' => 'No se pudo iniciar el proceso de pago. Intentá nuevamente.'
         ], 502);
     }
 
@@ -244,7 +243,7 @@ class MercadoPagoController extends Controller
 
             if ($pedido->estado !== 'pendiente_pago') {
                 DB::rollBack();
-                return response()->json(['message' => 'El pedido no está en estado pendiente_pago'], 409);
+                return response()->json(['message' => 'Este pedido no puede pagarse en este momento.'], 409);
             }
 
             // ✅ Si ya está APROBADO en este pago, no dejamos pagar de nuevo
@@ -291,7 +290,7 @@ class MercadoPagoController extends Controller
 
         // 2) Preparar llamada a API
         $amount = (float) $pago->monto;
-        if ($amount <= 0) return response()->json(['message' => 'Monto inválido'], 422);
+        if ($amount <= 0) return response()->json(['message' => 'El monto del pedido no es válido.'], 422);
 
         $payload = [
             'transaction_amount' => $amount,
@@ -337,7 +336,7 @@ class MercadoPagoController extends Controller
             ]);
 
             return response()->json([
-                'message' => 'Error procesando el pago con el banco',
+                'message' => 'No se pudo procesar el pago. Verificá los datos e intentá nuevamente.',
                 'detail' => $resp->json(),
             ], 502);
         }

@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Models\CatalogoWeb;
+use App\Models\PaljetArticuloOculto;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +20,6 @@ class PaljetService
 
     public function __construct()
     {
-        Log::error('🔥 CONSTRUCTOR PALJET SERVICE ACTIVO 🔥');
         $this->baseUrl = rtrim(config('services.paljet.base_url'), '/');
         $this->user    = config('services.paljet.user');
         $this->pass    = config('services.paljet.pass');
@@ -41,77 +43,331 @@ class PaljetService
     }
 
     /**
-     * Obtener artículos del WS de Paljet.
-     * Si se pasa 'categoria', el filtro se aplica en PHP porque el WS de Paljet
-     * devuelve error 500 al recibir ese parámetro.
+     * Obtener artículos del catálogo para el frontend.
+     * Lee desde la tabla local catalogo_web (sincronizada por catalogo:sync).
+     * Fallback al ERP si la tabla está vacía.
      */
     public function getArticulos(array $filtros = []): array
     {
-        $page        = (int) ($filtros['page'] ?? 0);
-        $size        = (int) ($filtros['size'] ?? 20);
-        $categoriaId = isset($filtros['categoria']) ? (int) $filtros['categoria'] : null;
+        $page = (int) ($filtros['page'] ?? 0);
+        $size = (int) ($filtros['size'] ?? 20);
 
-        // Quitar 'categoria' antes de enviar a Paljet (su WS crashea con ese param)
-        $params = array_merge(
-            ['dep_id' => $this->depId, 'page' => $page, 'size' => $size],
-            array_diff_key($filtros, ['categoria' => true])
-        );
-
-        // Al filtrar por categoría en PHP necesitamos todos los artículos de una vez
-        if ($categoriaId !== null) {
-            $params['page'] = 0;
-            $params['size'] = 500;
+        // Soporta un único ID o lista separada por comas: "5" o "5,12,34"
+        $categoriaIds = null;
+        if (!empty($filtros['categoria'])) {
+            $categoriaIds = array_values(array_filter(
+                array_map('intval', explode(',', (string) $filtros['categoria']))
+            ));
+            if (empty($categoriaIds)) {
+                $categoriaIds = null;
+            }
         }
 
         try {
-            $response = $this->client()->get("{$this->baseUrl}/articulos", $params);
+            // Si la tabla local tiene datos, servir desde DB
+            return $this->getArticulosFromDB($filtros, $page, $size, $categoriaIds);
 
-            if (!$response->successful()) {
-                Log::error('Paljet WS - Error al obtener artículos', [
-                    'status' => $response->status(),
-                    'body'   => $response->body(),
-                ]);
-                return ['error' => 'Error al consultar artículos en Paljet', 'status' => $response->status()];
-            }
-
-            $data = $response->json();
-
-            // Agregar imagen_url, stock_disponible y ultimas_unidades a cada artículo.
-            // Se obtiene el stock real de dep_id=8 en una sola llamada batch.
-            if (!empty($data['content'])) {
-                $stockMap = $this->getStockMapDeposito();
-                $data['content'] = array_map(
-                    fn($a) => $this->enrichArticulo($a, $stockMap[$a['id']] ?? null),
-                    $data['content']
-                );
-            }
-
-            // Filtro de categoría en PHP (incluye subcategorías)
-            if ($categoriaId !== null) {
-                $catIds = $this->getCategoryDescendantIds($categoriaId);
-
+            if ($categoriaIds !== null) {
+                $allDescendants = [];
+                foreach ($categoriaIds as $catId) {
+                    $allDescendants = array_merge($allDescendants, $this->getCategoryDescendantIds($catId));
+                }
+                $allDescendants = array_unique($allDescendants);
                 $filtered = array_values(array_filter(
-                    $data['content'] ?? [],
-                    fn($a) => isset($a['categoria']['id']) && in_array($a['categoria']['id'], $catIds)
+                    $filtered,
+                    fn($a) => isset($a['categoria']['id']) && in_array($a['categoria']['id'], $allDescendants)
                 ));
-
-                $total = count($filtered);
-                return [
-                    'content'       => array_slice($filtered, $page * $size, $size),
-                    'totalElements' => $total,
-                    'totalPages'    => (int) ceil($total / max($size, 1)),
-                    'number'        => $page,
-                    'size'          => $size,
-                ];
             }
 
-            return $data;
+            $total   = count($filtered);
+            $content = array_slice($filtered, $page * $size, $size);
+
+            return [
+                'content'       => array_values($content),
+                'totalElements' => $total,
+                'totalPages'    => (int) ceil($total / max($size, 1)),
+                'number'        => $page,
+                'size'          => $size,
+            ];
         } catch (\Throwable $e) {
             Log::error('Paljet WS - Excepción al obtener artículos', [
                 'message' => $e->getMessage(),
             ]);
-            return ['error' => 'No se pudo conectar con el servicio de Paljet'];
+            return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.'];
         }
+    }
+
+    /**
+     * Consulta SQL sobre catalogo_web con filtros, multi-marca, ofertas y sorting.
+     */
+    private function getArticulosFromDB(array $filtros, int $page, int $size, ?array $categoriaIds): array
+    {
+        $query = CatalogoWeb::query()
+            ->from('catalogo_web')
+            ->leftJoin('paljet_ofertas', 'catalogo_web.paljet_art_id', '=', 'paljet_ofertas.paljet_art_id')
+            ->where('catalogo_web.precio', '>', 0);
+
+        if (!empty($filtros['descripcion'])) {
+            $query->where('catalogo_web.descripcion', 'like', '%' . $filtros['descripcion'] . '%');
+        }
+        if (!empty($filtros['desc_mod_med'])) {
+            $query->where('catalogo_web.desc_mod_med', 'like', '%' . $filtros['desc_mod_med'] . '%');
+        }
+        if (!empty($filtros['codigo'])) {
+            $query->where('catalogo_web.codigo', $filtros['codigo']);
+        }
+        if (!empty($filtros['ean'])) {
+            $query->where('catalogo_web.ean', $filtros['ean']);
+        }
+
+        // Multi-marca: array de nombres exactos
+        if (!empty($filtros['marcas']) && is_array($filtros['marcas'])) {
+            $query->whereIn('catalogo_web.marca_nombre', $filtros['marcas']);
+        }
+
+        if (!empty($filtros['familia'])) {
+            $query->where('catalogo_web.familia_nombre', 'like', '%' . $filtros['familia'] . '%');
+        }
+
+        // Filtro en oferta
+        if (!empty($filtros['en_oferta'])) {
+            $query->whereNotNull('paljet_ofertas.paljet_art_id');
+        }
+
+        if ($categoriaIds !== null) {
+            $allDescendants = [];
+            foreach ($categoriaIds as $catId) {
+                $allDescendants = array_merge($allDescendants, $this->getCategoryDescendantIds($catId));
+            }
+            $query->whereIn('catalogo_web.categoria_id', array_unique($allDescendants));
+        }
+
+        // Sorting
+        $sort = $filtros['sort'] ?? 'relevancia';
+        match ($sort) {
+            'precio_asc'  => $query->orderBy('catalogo_web.precio', 'asc'),
+            'precio_desc' => $query->orderBy('catalogo_web.precio', 'desc'),
+            'oferta'      => $query->orderByRaw('paljet_ofertas.paljet_art_id IS NOT NULL DESC'),
+            default       => $query->orderBy('catalogo_web.ventas_count', 'desc')
+                ->orderBy('catalogo_web.paljet_art_id', 'asc'),
+        };
+
+        $cols = [
+            'catalogo_web.paljet_art_id',
+            'catalogo_web.codigo',
+            'catalogo_web.ean',
+            'catalogo_web.descripcion',
+            'catalogo_web.desc_cliente',
+            'catalogo_web.desc_mod_med',
+            'catalogo_web.marca_id',
+            'catalogo_web.marca_nombre',
+            'catalogo_web.familia_id',
+            'catalogo_web.familia_nombre',
+            'catalogo_web.categoria_id',
+            'catalogo_web.categoria_nombre',
+            'catalogo_web.precio',
+            'catalogo_web.admin_existencia',
+            'catalogo_web.stock',
+            'catalogo_web.ultimas_unidades',
+            'catalogo_web.imagen_url',
+            'catalogo_web.tiene_imagen',
+            'catalogo_web.listas_json',
+            'paljet_ofertas.precio_oferta',
+        ];
+
+$items = $query->paginate($size, $cols, 'page', $page + 1);
+
+$content = collect($items->items())
+    ->map(fn($row) => $this->catalogoWebToArray($row))
+    ->values()
+    ->all();
+
+return [
+    'content'       => $content,
+    'totalElements' => $items->total(),
+    'totalPages'    => $items->lastPage(),
+    'number'        => $items->currentPage() - 1,
+    'size'          => $items->perPage(),
+];
+    }
+
+    /**
+     * Convierte un registro de catalogo_web al formato que usa el frontend.
+     */
+    private function catalogoWebToArray($row): array
+    {
+        $precioOriginal = (float) $row->precio;
+        $precioOferta   = isset($row->precio_oferta) && $row->precio_oferta > 0
+            ? (float) $row->precio_oferta
+            : null;
+        $enOferta = $precioOferta !== null;
+
+        return [
+            'id'               => (int) $row->paljet_art_id,
+            'art_id'           => (int) $row->paljet_art_id,
+            'codigo'           => $row->codigo,
+            'ean'              => $row->ean,
+            'descripcion'      => $row->descripcion,
+            'nombre'           => $row->descripcion,
+            'desc_cliente'     => $row->desc_cliente,
+            'desc_mod_med'     => $row->desc_mod_med,
+            'marca'            => $row->marca_id
+                ? ['id' => (int) $row->marca_id, 'nombre' => $row->marca_nombre]
+                : ['id' => null, 'nombre' => $row->marca_nombre],
+            'familia'          => $row->familia_id
+                ? ['id' => (int) $row->familia_id, 'nombre' => $row->familia_nombre]
+                : null,
+            'categoria'        => $row->categoria_id
+                ? ['id' => (int) $row->categoria_id, 'nombre' => $row->categoria_nombre]
+                : null,
+            'precio'           => $precioOriginal,
+            'precio_original'  => $precioOriginal,
+            'precio_oferta'    => $precioOferta,
+            'en_oferta'        => $enOferta,
+            'listas'           => is_string($row->listas_json)
+                ? json_decode($row->listas_json, true) ?? []
+                : ($row->listas_json ?? []),
+            'admin_existencia' => (bool) $row->admin_existencia,
+            'stock_disponible' => $row->admin_existencia ? (int) $row->stock : null,
+            'stock'            => (int) $row->stock,
+            'ultimas_unidades' => (bool) $row->ultimas_unidades,
+            'imagen_url'       => $row->tiene_imagen === false ? null : $row->imagen_url,
+        ];
+    }
+
+    /**
+     * Devuelve el catálogo completo enriquecido y filtrado desde caché.
+     * Si la caché expiró, lo recarga desde Paljet.
+     */
+    public function getCachedFullCatalog(): array
+    {
+        $ttl      = (int) config('services.paljet.cache_ttl', 600);
+        $cacheKey = "paljet_catalogo_dep_{$this->depId}";
+
+        return Cache::remember($cacheKey, $ttl, fn() => $this->fetchFullCatalogFromERP());
+    }
+
+    /**
+     * Fuerza la recarga del catálogo desde Paljet, actualiza la caché e invalida categorías.
+     */
+    public function warmupCatalogCache(): array
+    {
+        $cacheKey = "paljet_catalogo_dep_{$this->depId}";
+        $catalog  = $this->fetchFullCatalogFromERP();
+        $ttl      = (int) config('services.paljet.cache_ttl', 600);
+
+        Cache::put($cacheKey, $catalog, $ttl);
+        Cache::forget("paljet_categorias_{$this->depId}");
+
+        return $catalog;
+    }
+
+    /**
+     * Pagina todos los artículos del ERP, los enriquece con stock e imagen,
+     * filtra los no publicables y los ocultos, y devuelve el array completo.
+     */
+    private function fetchFullCatalogFromERP(): array
+    {
+        set_time_limit(300); // La descarga completa puede tardar más de 60s
+
+        $pageSize     = 1000;
+        $allArticulos = [];
+        $page         = 0;
+
+        do {
+            $response = $this->client()->get("{$this->baseUrl}/articulos", [
+                'dep_id'       => $this->depId,
+                'solo_activos' => 'true',
+                'include'      => 'listas',
+                'size'         => $pageSize,
+                'page'         => $page,
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('Paljet WS - Error al paginar catálogo completo', [
+                    'page'   => $page,
+                    'status' => $response->status(),
+                ]);
+                break;
+            }
+
+            $data         = $response->json();
+            $allArticulos = array_merge($allArticulos, $data['content'] ?? []);
+            $totalPages   = (int) ($data['totalPages'] ?? 1);
+            $page++;
+        } while ($page < $totalPages);
+
+        Log::info('Paljet WS - Catálogo descargado', ['total_raw' => count($allArticulos)]);
+
+        $stockMap   = $this->getStockMapDeposito();
+        $ocultosSet = PaljetArticuloOculto::pluck('paljet_art_id')->flip()->all();
+
+        $enriched = [];
+        foreach ($allArticulos as $art) {
+            if (isset($ocultosSet[(int) $art['id']])) {
+                continue;
+            }
+            $art = $this->enrichArticulo($art, $stockMap[(int) $art['id']] ?? null);
+            if ($this->articuloPublicable($art)) {
+                $enriched[] = $this->slimArticulo($art);
+            }
+        }
+
+        Log::info('Paljet WS - Catálogo listo para caché', ['total_publicables' => count($enriched)]);
+
+        return $enriched;
+    }
+
+    /**
+     * Aplica filtros de texto y campo sobre el array completo del catálogo cacheado.
+     */
+    private function applyFiltros(array $articulos, array $filtros): array
+    {
+        return array_values(array_filter($articulos, function ($art) use ($filtros) {
+            if (!empty($filtros['descripcion'])) {
+                if (stripos($art['descripcion'] ?? '', $filtros['descripcion']) === false) {
+                    return false;
+                }
+            }
+
+            if (!empty($filtros['desc_mod_med'])) {
+                if (stripos($art['desc_mod_med'] ?? '', $filtros['desc_mod_med']) === false) {
+                    return false;
+                }
+            }
+
+            if (!empty($filtros['codigo'])) {
+                if (($art['codigo'] ?? '') !== $filtros['codigo']) {
+                    return false;
+                }
+            }
+
+            if (!empty($filtros['ean'])) {
+                if (($art['ean'] ?? '') !== $filtros['ean']) {
+                    return false;
+                }
+            }
+
+            if (!empty($filtros['marca'])) {
+                $marcaNombre = is_array($art['marca'] ?? null)
+                    ? ($art['marca']['nombre'] ?? '')
+                    : ($art['marca'] ?? '');
+                if (stripos($marcaNombre, $filtros['marca']) === false) {
+                    return false;
+                }
+            }
+
+            if (!empty($filtros['familia'])) {
+                $familiaNombre = is_array($art['familia'] ?? null)
+                    ? ($art['familia']['nombre'] ?? '')
+                    : ($art['familia'] ?? '');
+                if (stripos($familiaNombre, $filtros['familia']) === false) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
     }
 
     /**
@@ -121,12 +377,18 @@ class PaljetService
     protected function getCategoryDescendantIds(int $categoryId): array
     {
         try {
-            $response = $this->client()->get("{$this->baseUrl}/categorias");
-            if (!$response->successful()) {
+            $ttl      = (int) config('services.paljet.cache_ttl', 600);
+            $cacheKey = "paljet_categorias_tree_{$this->empId}";
+
+            $tree = Cache::remember($cacheKey, $ttl, function () {
+                $response = $this->client()->get("{$this->baseUrl}/categorias");
+                return $response->successful() ? $response->json() : null;
+            });
+
+            if (!$tree) {
                 return [$categoryId];
             }
 
-            $tree      = $response->json();
             $rootHijos = $tree[0]['hijos'] ?? [];
 
             $found = $this->findSubtree($rootHijos, $categoryId);
@@ -171,6 +433,16 @@ class PaljetService
      */
     public function getImagenArticulo(string $codigo): array
     {
+        $path = public_path("productos/{$codigo}.jpg");
+
+        // Si la imagen ya existe en disco
+        if (file_exists($path)) {
+            return [
+                'body' => file_get_contents($path),
+                'type' => 'image/jpeg'
+            ];
+        }
+
         try {
             $response = $this->client()->get("{$this->baseUrl}/imagenes/articulos", [
                 'codigo' => $codigo,
@@ -186,6 +458,15 @@ class PaljetService
                 return ['error' => 'Sin imagen', 'status' => 404];
             }
 
+            // Crear carpeta si no existe
+            $dir = storage_path("app/public/productos");
+            if (!file_exists($dir)) {
+                mkdir($dir, 0755, true);
+            }
+
+            // Guardar imagen en disco
+            file_put_contents($path, $body);
+
             return [
                 'body' => $body,
                 'type' => $response->header('Content-Type') ?: 'image/jpeg',
@@ -195,56 +476,68 @@ class PaljetService
                 'codigo'  => $codigo,
                 'message' => $e->getMessage(),
             ]);
+
             return ['error' => 'No se pudo obtener la imagen'];
         }
     }
 
     /**
-     * Obtener el árbol de categorías filtrado a las que tienen artículos publicados.
+     * Lista de marcas con conteo de artículos en el catálogo activo.
+     * Sirve directo desde DB — reemplaza el request ?size=500 del frontend.
+     */
+    public function getMarcas(): array
+    {
+        return CatalogoWeb::where('precio', '>', 0)
+            ->whereNotNull('marca_nombre')
+            ->where('marca_nombre', '!=', '')
+            ->selectRaw('marca_nombre as nombre, COUNT(*) as count')
+            ->groupBy('marca_nombre')
+            ->orderBy('marca_nombre')
+            ->get()
+            ->toArray();
+    }
+
+    /**
+     * Árbol de categorías cacheado.
+     * Si la tabla local existe, lee categorías activas desde DB (sin llamar al ERP).
      */
     public function getCategorias(): array
     {
-        try {
-            // 1. Traer todos los artículos publicados para obtener sus categoria IDs
-            $artResponse = $this->client()->get("{$this->baseUrl}/articulos", [
-                'dep_id'       => $this->depId,
-                'publica_web'  => 'true',
-                'solo_activos' => 'true',
-                'size'         => 500,
-                'page'         => 0,
-            ]);
+        $ttl      = (int) config('services.paljet.cache_ttl', 600);
+        $cacheKey = "paljet_categorias_{$this->depId}";
 
-            if (!$artResponse->successful()) {
-                return ['error' => 'Error al obtener artículos', 'status' => $artResponse->status()];
-            }
-
-            $articulos     = $artResponse->json()['content'] ?? [];
-            $activeCatIds  = [];
-            foreach ($articulos as $art) {
-                $cat = $art['categoria'] ?? null;
-                if (isset($cat['id'])) {
-                    $activeCatIds[$cat['id']] = true;
+        return Cache::remember($cacheKey, $ttl, function () {
+            // IDs de categorías con artículos activos
+            if (CatalogoWeb::query()->count() > 0) {
+                $activeCatIds = CatalogoWeb::where('precio', '>', 0)
+                    ->whereNotNull('categoria_id')
+                    ->pluck('categoria_id')
+                    ->unique()
+                    ->flip()
+                    ->all();
+            } else {
+                $articulos    = $this->getCachedFullCatalog();
+                $activeCatIds = [];
+                foreach ($articulos as $art) {
+                    $cat = $art['categoria'] ?? null;
+                    if (isset($cat['id'])) {
+                        $activeCatIds[$cat['id']] = true;
+                    }
                 }
             }
 
-            // 2. Traer el árbol completo de categorías de Paljet
+            // Árbol completo desde Paljet (solo estructura de árbol, no artículos)
             $catResponse = $this->client()->get("{$this->baseUrl}/categorias");
 
             if (!$catResponse->successful()) {
                 return ['error' => 'Error al obtener categorías', 'status' => $catResponse->status()];
             }
 
-            $tree     = $catResponse->json();
+            $tree      = $catResponse->json();
             $rootHijos = (is_array($tree) && isset($tree[0]['hijos'])) ? $tree[0]['hijos'] : [];
 
-            // 3. Podar el árbol: solo nodos con al menos un descendiente (o ellos mismos) activo
             return $this->pruneCategoriasTree($rootHijos, $activeCatIds);
-        } catch (\Throwable $e) {
-            Log::error('Paljet WS - Excepción al obtener categorías', [
-                'message' => $e->getMessage(),
-            ]);
-            return ['error' => 'No se pudo conectar con el servicio de Paljet'];
-        }
+        });
     }
 
     /**
@@ -266,6 +559,33 @@ class PaljetService
             }
         }
         return $result;
+    }
+
+    /**
+     * Obtiene los datos completos de un cliente de Paljet por su cli_id.
+     * Retorna el array de datos o null si falla.
+     */
+    public function getClientePaljet(int $cliId): ?array
+    {
+        try {
+            $response = $this->client()->get("{$this->baseUrl}/clientes/{$cliId}");
+
+            if (!$response->successful()) {
+                Log::warning('Paljet WS - No se pudo obtener datos del cliente', [
+                    'cli_id' => $cliId,
+                    'status' => $response->status(),
+                ]);
+                return null;
+            }
+
+            return $response->json();
+        } catch (\Throwable $e) {
+            Log::error('Paljet WS - Excepción al obtener datos de cliente', [
+                'cli_id'  => $cliId,
+                'message' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 
     /**
@@ -345,19 +665,26 @@ class PaljetService
         }
 
         // =========================
-        // 4. Construcción del Body (MINIMALISTA Y SEGURO)
+        // 4. Construcción del Body
         // =========================
+
+        // Nombre completo en mayúsculas. Paljet sobreescribe rz internamente (AFIP lookup),
+        // pero nom_fantasia sí se guarda como lo enviamos. Mandamos ambos con el mismo valor.
+        $nombre      = strtoupper(trim($datos['nombre'] ?? ''));
+        $apellido    = strtoupper(trim($datos['apellido'] ?? ''));
+        $nombreCompleto = trim("$apellido $nombre") ?: 'CLIENTE WEB';
+
         $body = [
             'cod_cli'          => '',
             'cli_tipo_id'      => 1,
-            'rz'               => $datos['nombre'] ?? 'Cliente Web',
-            'nom_fantasia'     => $datos['nombre'] ?? 'Cliente Web',
+            'rz'               => $nombreCompleto,
+            'nom_fantasia'     => $nombreCompleto,
             'cuit'             => $cuitLimpio,
             'iva_id'           => $ivaId,
             'sexo'             => $sexo,
             'crediticio'       => false,
             'ctacorrentista'   => false,
-            "ctacte_tipo_id" => 1,
+            'ctacte_tipo_id'   => 1,
             'discrimina_bonif' => false,
             'es_cli_generico'  => false,
             'copia_nota_cpr'   => false,
@@ -393,16 +720,34 @@ class PaljetService
         // =========================
         $locId = (int) config('services.paljet.web_loc_id', 174);
 
+        $calle    = 'WEB';
+        $calleNro = 0;
+        $cpNuevo  = '';
+        $domText  = 'WEB 0';
+
+        if (!empty($datos['direccion'])) {
+            // Separar "Ceferino Namuncura 1313" → calle + número
+            if (preg_match('/^(.+?)\s+(\d+)\s*$/', trim($datos['direccion']), $m)) {
+                $calle    = strtoupper(trim($m[1]));
+                $calleNro = (int) $m[2];
+            } else {
+                $calle    = strtoupper(trim($datos['direccion']));
+                $calleNro = 0;
+            }
+            $cpNuevo = strtoupper($datos['codigo_postal'] ?? '');
+            $domText = strtoupper(trim($datos['direccion']));
+        }
+
         $body['domicilios'] = [[
-            'calle'         => 'WEB',
-            'calle_nro'     => 0,
-            'cp_nuevo'      => '',
-            'dom'           => 'WEB 0',
+            'calle'         => $calle,
+            'calle_nro'     => $calleNro,
+            'cp_nuevo'      => $cpNuevo,
+            'dom'           => $domText,
             'dom_clasif_id' => 'DP',
             'loc_id'        => $locId,
             'por_defecto'   => true,
             'entre_calle'   => '',
-            'partido'       => '',
+            'partido'       => strtoupper($datos['localidad'] ?? ''),
             'latitud'       => '',
             'longitud'      => '',
             'local'         => 0,
@@ -411,6 +756,7 @@ class PaljetService
         // =========================
         // 8. Enviar a Paljet
         // =========================
+        Log::info('Paljet WS - Body crearCliente', ['rz' => $body['rz'], 'nom_fantasia' => $body['nom_fantasia'], 'datos_recibidos' => array_diff_key($datos, ['password' => true])]);
         try {
             $response = $this->client()->post("{$this->baseUrl}/clientes", $body);
 
@@ -505,7 +851,7 @@ class PaljetService
      * @param int $domicilioId
      * @param string|null $nota
      * @param int|null $condVtaId
-     * @return int|null ID del pedido generado en Paljet
+     * @return array|null ['cpr_id' => int, 'pto_vta' => int|null, 'numero' => int|null, 'letra' => string|null]
      */
     public function enviarPedidoWeb(
         int $paljetCliId,
@@ -513,7 +859,7 @@ class PaljetService
         int $domicilioId,
         string $nota = null,
         int $condVtaId = null
-    ): ?int {
+    ): ?array {
 
         if (empty($items)) {
             Log::warning('Paljet WS - Intento de enviar pedido sin items', [
@@ -521,8 +867,6 @@ class PaljetService
             ]);
             return null;
         }
-
-        $notifEmail = config('services.paljet.notif_email');
 
         $body = [
             'aplica_dto_nivel' => true,
@@ -540,9 +884,7 @@ class PaljetService
             }, $items),
         ];
 
-        if ($notifEmail) {
-            $body['mailDestinatarios'] = $notifEmail;
-        }
+        // No enviamos mailDestinatarios a Paljet — los mails los manejamos nosotros
 
         if ($nota) {
             $body['nota'] = [$nota];
@@ -595,14 +937,23 @@ class PaljetService
                     ]);
                 }
 
+                $ptoVta = data_get($data, 'pedido.pto_vta');
+                $numero = data_get($data, 'pedido.numero');
+                $letra  = data_get($data, 'pedido.letra');
+
                 Log::info('Paljet WS - Pedido creado correctamente', [
-                    'cpr_id'   => $cprId,
-                    'pto_vta'  => data_get($data, 'pedido.pto_vta'),
-                    'numero'   => data_get($data, 'pedido.numero'),
-                    'letra'    => data_get($data, 'pedido.letra'),
+                    'cpr_id'  => $cprId,
+                    'pto_vta' => $ptoVta,
+                    'numero'  => $numero,
+                    'letra'   => $letra,
                 ]);
 
-                return (int) $cprId;
+                return [
+                    'cpr_id'  => (int) $cprId,
+                    'pto_vta' => $ptoVta,
+                    'numero'  => $numero,
+                    'letra'   => $letra,
+                ];
             }
 
             Log::warning('Paljet WS - Respuesta 200 pero sin cpr_id', [
@@ -799,7 +1150,7 @@ class PaljetService
 
         try {
 
-            $paljetPedidoId = $this->enviarPedidoWeb(
+            $paljetResult = $this->enviarPedidoWeb(
                 $paljetCliId,
                 $paljetItems,
                 $paljetDomId,
@@ -809,28 +1160,39 @@ class PaljetService
 
             Log::info("Paljet - Resultado enviarPedidoWeb", [
                 'pedido_id' => $pedido->id,
-                'resultado' => $paljetPedidoId
+                'resultado' => $paljetResult
             ]);
 
-            // 🔥 Si Paljet devuelve null / false / 0 → explotar
+            // 🔥 Si Paljet devuelve null o sin cpr_id → explotar
+            $paljetPedidoId = $paljetResult['cpr_id'] ?? null;
+
             if (empty($paljetPedidoId) || !is_numeric($paljetPedidoId)) {
 
                 Log::error("Paljet - Pedido rechazado por API", [
                     'pedido_id' => $pedido->id,
-                    'respuesta' => $paljetPedidoId
+                    'respuesta' => $paljetResult
                 ]);
 
                 throw new \Exception("Paljet rechazó el pedido {$pedido->id}");
             }
 
-            // Guardar ID ERP
+            // Formatear número de comprobante con pto_vta y numero de Paljet
+            $ptoVta = $paljetResult['pto_vta'] ?? null;
+            $numero = $paljetResult['numero']  ?? null;
+            $numeroComprobante = ($ptoVta !== null && $numero !== null)
+                ? str_pad((int) $ptoVta, 4, '0', STR_PAD_LEFT) . '-' . str_pad((int) $numero, 6, '0', STR_PAD_LEFT)
+                : null;
+
+            // Guardar ID ERP y número de comprobante
             $pedido->update([
-                'paljet_pedido_id' => (int) $paljetPedidoId
+                'paljet_pedido_id'   => (int) $paljetPedidoId,
+                'numero_comprobante' => $numeroComprobante,
             ]);
 
             Log::info("Paljet - Pedido web enviado OK", [
-                'pedido_id'        => $pedido->id,
-                'paljet_pedido_id' => $paljetPedidoId,
+                'pedido_id'          => $pedido->id,
+                'paljet_pedido_id'   => $paljetPedidoId,
+                'numero_comprobante' => $numeroComprobante,
             ]);
 
             return (int) $paljetPedidoId;
@@ -964,7 +1326,7 @@ class PaljetService
                 'art_id'  => $artId,
                 'message' => $e->getMessage(),
             ]);
-            return ['error' => 'No se pudo conectar con el servicio de Paljet'];
+            return ['error' => 'No se pudo cargar el producto. Intentá de nuevo en unos instantes.'];
         }
     }
 
@@ -977,6 +1339,28 @@ class PaljetService
      * $stockOverride: valor real de 'disponible' obtenido del endpoint de stock.
      * Si es null, se intenta con los campos del artículo (suelen venir vacíos en listados).
      */
+    /**
+     * Determina si un artículo es publicable en la web.
+     * Requisitos: stock > 0 (si Paljet gestiona existencia) y precio final > 0.
+     */
+    private function articuloPublicable(array $articulo): bool
+    {
+        // Solo se filtra por precio: debe tener precio final > 0 en alguna lista de precios.
+        // Los artículos sin stock se muestran igual (el frontend los marca como "agotado").
+        $precio = 0.0;
+        foreach ($articulo['listas'] ?? [] as $lista) {
+            if (isset($lista['pr_final']) && (float) $lista['pr_final'] > 0) {
+                $precio = (float) $lista['pr_final'];
+                break;
+            }
+        }
+        if ($precio === 0.0 && isset($articulo['pr_final'])) {
+            $precio = (float) $articulo['pr_final'];
+        }
+
+        return $precio > 0.0;
+    }
+
     private function enrichArticulo(array $articulo, ?float $stockOverride = null): array
     {
         // Imagen
@@ -1001,6 +1385,30 @@ class PaljetService
         }
 
         return $articulo;
+    }
+
+    /**
+     * Reduce un artículo enriquecido a solo los campos necesarios para el frontend.
+     * Elimina campos internos del ERP y slim-down de listas para reducir el tamaño del caché.
+     */
+    private function slimArticulo(array $art): array
+    {
+        // Solo slim-down del array listas: quedarse con los campos esenciales para precio.
+        // El resto de campos del artículo se mantienen para no romper el frontend.
+        $listas = [];
+        foreach ($art['listas'] ?? [] as $lista) {
+            $listas[] = array_intersect_key($lista, array_flip([
+                'lista',
+                'lista_id',
+                'lista_nombre',
+                'pr_final',
+                'pr_vta',
+                'nombre',
+            ]));
+        }
+
+        $art['listas'] = $listas;
+        return $art;
     }
 
     /**
@@ -1057,7 +1465,7 @@ class PaljetService
                     'status' => $response->status(),
                     'body'   => $response->body(),
                 ]);
-                return ['error' => 'Error al consultar artículos en Paljet', 'status' => $response->status()];
+                return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.', 'status' => $response->status()];
             }
 
             $articulos = $response->json()['content'] ?? [];
@@ -1105,7 +1513,7 @@ class PaljetService
             Log::error('Paljet WS - Excepción al obtener artículos sin stock', [
                 'message' => $e->getMessage(),
             ]);
-            return ['error' => 'No se pudo conectar con el servicio de Paljet'];
+            return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.'];
         }
     }
 
@@ -1117,26 +1525,34 @@ class PaljetService
     private function getStockMapDeposito(): array
     {
         try {
-            $response = $this->client()->get("{$this->baseUrl}/stock", [
-                'depositos'   => $this->depId,
-                'publica_web' => 'true',
-                'size'        => 500,
-                'page'        => 0,
-            ]);
+            $map      = [];
+            $page     = 0;
+            $pageSize = 1000;
 
-            if (!$response->successful()) {
-                return [];
-            }
+            do {
+                $response = $this->client()->get("{$this->baseUrl}/stock", [
+                    'depositos' => $this->depId,
+                    'size'      => $pageSize,
+                    'page'      => $page,
+                ]);
 
-            $entries = $response->json()['content'] ?? [];
-            $map     = [];
-
-            foreach ($entries as $entry) {
-                $artId = $entry['articulo']['art_id'] ?? null;
-                if ($artId !== null) {
-                    $map[(int) $artId] = (float) ($entry['disponible'] ?? 0);
+                if (!$response->successful()) {
+                    break;
                 }
-            }
+
+                $data       = $response->json();
+                $entries    = $data['content'] ?? [];
+                $totalPages = (int) ($data['totalPages'] ?? 1);
+
+                foreach ($entries as $entry) {
+                    $artId = $entry['articulo']['art_id'] ?? null;
+                    if ($artId !== null) {
+                        $map[(int) $artId] = (float) ($entry['disponible'] ?? 0);
+                    }
+                }
+
+                $page++;
+            } while ($page < $totalPages);
 
             return $map;
         } catch (\Throwable $e) {
@@ -1175,7 +1591,7 @@ class PaljetService
                     'status' => $response->status(),
                     'body'   => $response->body(),
                 ]);
-                return ['error' => 'Error al consultar artículos en Paljet', 'status' => $response->status()];
+                return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.', 'status' => $response->status()];
             }
 
             $articulos = $response->json()['content'] ?? [];
@@ -1247,7 +1663,7 @@ class PaljetService
             Log::error('Paljet WS - Excepción al obtener artículos en oferta', [
                 'message' => $e->getMessage(),
             ]);
-            return ['error' => 'No se pudo conectar con el servicio de Paljet'];
+            return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.'];
         }
     }
 
@@ -1343,15 +1759,15 @@ class PaljetService
      *
      * @return int|null  ID del pedido en Paljet, o null si no se pudo registrar.
      */
-public function registrarPedidoConfirmado(int $pedidoId): ?int
-{
-    $pedido = \App\Models\Pedido::find($pedidoId);
+    public function registrarPedidoConfirmado(int $pedidoId): ?int
+    {
+        $pedido = \App\Models\Pedido::find($pedidoId);
 
-    if (!$pedido) {
-        Log::error("Pedido #{$pedidoId} no existe.");
-        return null;
+        if (!$pedido) {
+            Log::error("Pedido #{$pedidoId} no existe.");
+            return null;
+        }
+
+        return $this->generarFacturaDePedido($pedido);
     }
-
-    return $this->generarFacturaDePedido($pedido);
-}
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use App\Models\CatalogoWeb;
 use App\Models\Cliente;
 use App\Models\Producto;
 use App\Models\Sucursal;
@@ -56,15 +57,79 @@ class AdminController extends Controller
      */
     public function productos(Request $request)
     {
-        $paljet = app(PaljetService::class);
-
-        // Paljet usa page base-0; el frontend admin puede enviar page base-1 o base-0
+        $size    = min((int) $request->query('per_page', 20), 100);
         $pageRaw = (int) $request->query('page', 1);
         $page    = $pageRaw > 0 ? $pageRaw - 1 : 0; // normalizar a base-0
 
+        // Filtro en_oferta: se resuelve desde catalogo_web + paljet_ofertas (ERP no soporta este filtro)
+        if ($request->query('en_oferta') == '1') {
+            $ofertas = PaljetOferta::all()->keyBy('paljet_art_id');
+            $ids     = $ofertas->keys()->toArray();
+
+            if (empty($ids)) {
+                return response()->json([
+                    'content'          => [],
+                    'totalElements'    => 0,
+                    'totalPages'       => 0,
+                    'number'           => $page,
+                    'size'             => $size,
+                ]);
+            }
+
+            $query = CatalogoWeb::whereIn('paljet_art_id', $ids);
+
+            if ($search = $request->query('search')) {
+                $query->where('descripcion', 'like', "%{$search}%");
+            }
+            if ($marca = $request->query('marca')) {
+                $query->where('marca_id', (int) $marca);
+            }
+            if ($familia = $request->query('familia')) {
+                $query->where('familia_id', (int) $familia);
+            }
+            if ($categoriaId = $request->query('categoria_id')) {
+                $query->where('categoria_id', (int) $categoriaId);
+            }
+
+            $total    = $query->count();
+            $articulos = $query->skip($page * $size)->take($size)->get();
+
+            $content = $articulos->map(function ($art) use ($ofertas) {
+                $oferta = $ofertas->get($art->paljet_art_id);
+                return [
+                    'id'            => $art->paljet_art_id,
+                    'codigo'        => $art->codigo,
+                    'ean'           => $art->ean,
+                    'descripcion'   => $art->descripcion,
+                    'desc_cliente'  => $art->desc_cliente,
+                    'desc_mod_med'  => $art->desc_mod_med,
+                    'marca'         => $art->marca_id ? ['id' => $art->marca_id, 'nombre' => $art->marca_nombre] : null,
+                    'familia'       => $art->familia_id ? ['id' => $art->familia_id, 'nombre' => $art->familia_nombre] : null,
+                    'categoria'     => $art->categoria_id ? ['id' => $art->categoria_id, 'nombre' => $art->categoria_nombre] : null,
+                    'precio'        => $art->precio,
+                    'admin_existencia' => $art->admin_existencia,
+                    'stock_disponible' => $art->stock,
+                    'imagen_url'    => $art->imagen_url,
+                    'listas'        => $art->listas_json ?? [],
+                    'en_oferta'     => true,
+                    'precio_oferta' => $oferta?->precio_oferta,
+                ];
+            })->values()->toArray();
+
+            return response()->json([
+                'content'       => $content,
+                'totalElements' => $total,
+                'totalPages'    => (int) ceil($total / $size),
+                'number'        => $page,
+                'size'          => $size,
+            ]);
+        }
+
+        // Sin filtro en_oferta: consulta normal al ERP
+        $paljet  = app(PaljetService::class);
         $filtros = array_filter([
             'page'        => $page,
-            'size'        => min((int) $request->query('per_page', 20), 100),
+            'size'        => $size,
             'descripcion' => $request->query('search'),
             'marca'       => $request->query('marca'),
             'familia'     => $request->query('familia'),

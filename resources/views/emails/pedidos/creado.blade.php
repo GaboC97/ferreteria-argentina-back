@@ -10,9 +10,10 @@ Se recibió un pedido nuevo. Está **pendiente de pago**.
 @else
 # ¡Recibimos tu pedido, {{ explode(' ', $pedido->nombre_contacto ?? 'Cliente')[0] }}!
 
-Tu pedido **#{{ $pedido->id }}** fue registrado correctamente y está **pendiente de pago**.
+Tu pedido fue registrado correctamente y está **pendiente de pago**.
 @endif
 
+**N° de solicitud:** `#{{ $pedido->id }}`
 **Fecha:** {{ $pedido->created_at->format('d/m/Y H:i') }}
 
 ---

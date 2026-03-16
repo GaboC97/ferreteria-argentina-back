@@ -33,6 +33,8 @@ class User extends Authenticatable
         'remember_token',
         'email_otp',
         'email_otp_expires_at',
+        'reset_password_otp',
+        'reset_password_otp_expires_at',
     ];
 
     /**

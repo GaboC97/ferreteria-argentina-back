@@ -15,6 +15,7 @@ class Pedido extends Model
         'cliente_id',
         'sucursal_id',
         'tipo_entrega',
+        'numero_comprobante',
         'nombre_contacto',
         'email_contacto',
         'telefono_contacto',

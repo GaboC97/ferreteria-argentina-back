@@ -12,7 +12,6 @@ use App\Services\PaljetService;
 use App\Services\PedidoService;
 use App\Services\PedidoValidationService;
 use Illuminate\Support\Facades\Mail;
-use App\Mail\PedidoCreadoMail;
 use App\Mail\PagoAprobadoMail;
 use App\Models\Pedido;
 use App\Models\Pago;
@@ -60,6 +59,12 @@ class PedidoController extends Controller
         // Filtros opcionales
         if ($request->has('estado')) {
             $query->where('estado', $request->estado);
+        }
+
+        if ($request->filled('tipo_entrega')) {
+            // El frontend envía 'retiro' o 'envio'; en la BD está 'retiro_sucursal' o 'envio'
+            $tipoEntrega = $request->tipo_entrega === 'retiro' ? 'retiro_sucursal' : $request->tipo_entrega;
+            $query->where('tipo_entrega', $tipoEntrega);
         }
 
         if ($request->has('sucursal_id')) {
@@ -210,44 +215,6 @@ class PedidoController extends Controller
             $data, $items, $itemsLocales, $productoIds, $sucursalId, $venceEn, $clienteId
         );
 
-        // ==========================================================
-        // MAILS (fuera de transaction) - BLINDADOS CONTRA RATELIMIT
-        // ==========================================================
-        try {
-            $pedidoModel = Pedido::with(['items', 'envio', 'sucursal'])
-                ->find($result['pedido_id']);
-
-            if ($pedidoModel) {
-                $emailCliente = $pedidoModel->email_contacto;
-                $emailInterno = env('FERRETERIA_PEDIDOS_EMAIL') ?: config('mail.ferreteria.notif_email');
-
-                if (!empty($emailCliente)) {
-                    try {
-                        Mail::mailer('pedidos')
-                            ->to($emailCliente)
-                            ->send(new \App\Mail\PedidoCreadoMail($pedidoModel, false));
-                    } catch (\Throwable $e) {
-                        Log::warning("Falla Mail PedidoCreado Cliente #{$result['pedido_id']}: " . $e->getMessage());
-                    }
-                }
-
-                if (!empty($emailInterno)) {
-                    try {
-                        Mail::mailer('pedidos')
-                            ->to($emailInterno)
-                            ->send(new \App\Mail\PedidoCreadoMail($pedidoModel, true));
-                    } catch (\Throwable $e) {
-                        Log::warning("Falla Mail PedidoCreado Interno #{$result['pedido_id']}: " . $e->getMessage());
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            Log::error('Error general en sección de mails store', [
-                'pedido_id' => $result['pedido_id'] ?? null,
-                'error'     => $e->getMessage(),
-            ]);
-        }
-
         return response()->json($result, 201);
     }
 
@@ -273,7 +240,7 @@ class PedidoController extends Controller
             }
 
             if ($pedido->estado !== 'pendiente_pago') {
-                abort(409, 'El pedido no está en estado pendiente_pago.');
+                abort(409, 'Este pedido no puede pagarse en este momento.');
             }
 
             // 2) Traer y lockear reservas activas
@@ -305,7 +272,7 @@ class PedidoController extends Controller
                             'updated_at' => now(),
                         ]);
 
-                    abort(409, 'La reserva no está activa o ya venció.');
+                    abort(409, 'La reserva del pedido venció. Por favor, realizá un nuevo pedido.');
                 }
 
                 // 4) Lock stock_sucursal
@@ -326,7 +293,7 @@ class PedidoController extends Controller
                             'estado'     => 'fallido',
                             'updated_at' => now(),
                         ]);
-                        abort(409, 'Stock insuficiente al confirmar pago (condición de carrera).');
+                        abort(409, 'No hay stock suficiente para completar el pedido en este momento.');
                     }
                 }
 
@@ -373,6 +340,7 @@ class PedidoController extends Controller
                 $emailCliente = $pedidoModel->email_contacto;
                 $emailInterno = env('FERRETERIA_PAGOS_EMAIL') ?: env('FERRETERIA_NOTIF_EMAIL');
 
+                // Mail al cliente: pago aprobado + código de retiro si aplica
                 if ($emailCliente) {
                     try {
                         Mail::mailer('pagos')->to($emailCliente)->send(new PagoAprobadoMail($pedidoModel));
@@ -381,6 +349,7 @@ class PedidoController extends Controller
                     }
                 }
 
+                // Mail interno: resumen del pedido confirmado (cliente + admin)
                 if ($emailInterno) {
                     try {
                         Mail::mailer('pagos')->to($emailInterno)->send(new PagoAprobadoMail($pedidoModel, true));
@@ -409,7 +378,7 @@ class PedidoController extends Controller
         $pedido = Pedido::findAuthorizedOrFail($pedidoId, $request);
 
         if ($pedido->estado !== 'pendiente_pago') {
-            return response()->json(['error' => 'El pedido no está en estado pendiente_pago'], 409);
+            return response()->json(['error' => 'Este pedido no puede modificarse en este momento.'], 409);
         }
 
         $path = $request->file('comprobante')->store("comprobantes/pedido-{$pedidoId}", 'local');
@@ -468,7 +437,7 @@ class PedidoController extends Controller
             if (!$pedido) abort(404, 'Pedido no encontrado.');
 
             if ($pedido->estado === 'pagado') {
-                abort(409, 'El pedido está pagado. Esto debería ser una devolución, no cancelación.');
+                abort(409, 'El pedido ya fue pagado y no puede cancelarse. Contactanos si necesitás una devolución.');
             }
 
             if (!in_array($pedido->estado, ['pendiente_pago', 'borrador'], true)) {
@@ -513,7 +482,7 @@ class PedidoController extends Controller
             // 2) Permitir devolver si está en estado devolvible
             $estadosDevolvibles = ['pagado', 'preparando', 'enviado', 'entregado', 'devolucion_solicitada'];
             if (!in_array($pedido->estado, $estadosDevolvibles, true)) {
-                abort(409, 'Solo se puede devolver un pedido en estado: ' . implode(', ', $estadosDevolvibles) . '.');
+                abort(409, 'Este pedido no puede devolverse en su estado actual.');
             }
 
             // 3) Refund en MercadoPago (si el pago fue por MP)
@@ -626,7 +595,7 @@ class PedidoController extends Controller
 
             $estadosSolicitables = ['pagado', 'preparando', 'enviado', 'entregado'];
             if (!in_array($pedido->estado, $estadosSolicitables, true)) {
-                abort(409, 'No se puede solicitar devolución para un pedido en estado: ' . $pedido->estado . '.');
+                abort(409, 'No podés solicitar una devolución para este pedido en su estado actual.');
             }
 
             if ($pedido->estado === 'devolucion_solicitada') {
@@ -697,7 +666,7 @@ class PedidoController extends Controller
             if (!$pedido) abort(404, 'Pedido no encontrado.');
 
             if ($pedido->estado !== 'pendiente_pago') {
-                abort(409, 'Solo se puede rechazar un pago en estado pendiente_pago.');
+                abort(409, 'Este pedido no tiene un pago pendiente de revisión.');
             }
 
             DB::table('pedidos')->where('id', $pedidoId)->update([

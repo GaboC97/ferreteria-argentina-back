@@ -19,20 +19,31 @@ class PaljetCatalogoController extends Controller
      */
     public function index(Request $request)
     {
+        // Soporte multi-marca: ?marca=BOSCH&marca=FMT  o  ?marcas=BOSCH,FMT
+        $marcasRaw = $request->query('marcas');
+        $marcaArr  = $request->query('marca');
+        if ($marcasRaw) {
+            $marcas = array_filter(array_map('trim', explode(',', $marcasRaw)));
+        } elseif (is_array($marcaArr)) {
+            $marcas = array_filter($marcaArr);
+        } elseif ($marcaArr) {
+            $marcas = [$marcaArr];
+        } else {
+            $marcas = [];
+        }
+
         $filtros = array_filter([
-            'page'           => $request->query('page', 0),
-            'size'           => $request->query('size', 20),
-            'descripcion'    => $request->query('q'),
-            'desc_mod_med'   => $request->query('desc_mod_med'),
-            'codigo'         => $request->query('codigo'),
-            'ean'            => $request->query('ean'),
-            'marca'          => $request->query('marca'),
-            'familia'        => $request->query('familia'),
-            'categoria'      => $request->query('categoria'),
-            'solo_activos'   => $request->query('solo_activos', 'true'),
-            'publica_web'    => $request->query('publica_web', 'true'),
-            'include'        => $request->query('include', 'listas'),
-            'lista_id'       => $request->query('lista_id'),
+            'page'        => $request->query('page', 0),
+            'size'        => $request->query('size', 20),
+            'descripcion' => $request->query('q'),
+            'desc_mod_med'=> $request->query('desc_mod_med'),
+            'codigo'      => $request->query('codigo'),
+            'ean'         => $request->query('ean'),
+            'marcas'      => $marcas ?: null,
+            'familia'     => $request->query('familia'),
+            'categoria'   => $request->query('categoria'),
+            'en_oferta'   => $request->boolean('en_oferta') ? true : null,
+            'sort'        => $request->query('sort', 'relevancia'),
         ], fn($v) => !is_null($v) && $v !== '');
 
         $data = $this->paljet->getArticulos($filtros);
@@ -57,6 +68,15 @@ class PaljetCatalogoController extends Controller
         }
 
         return response()->json($data);
+    }
+
+    /**
+     * Lista de marcas disponibles en el catálogo con conteo de artículos.
+     * GET /api/catalogo/marcas
+     */
+    public function marcas()
+    {
+        return response()->json($this->paljet->getMarcas());
     }
 
     /**
@@ -105,6 +125,6 @@ class PaljetCatalogoController extends Controller
 
         return response($result['body'], 200)
             ->header('Content-Type', $result['type'])
-            ->header('Cache-Control', 'public, max-age=86400');
+            ->header('Cache-Control', 'public, max-age=2592000');
     }
 }

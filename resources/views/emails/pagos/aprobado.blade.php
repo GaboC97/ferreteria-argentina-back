@@ -6,14 +6,24 @@
 @if($esAdmin)
 # ✅ Pago confirmado
 
-El pago del pedido **#{{ $pedido->id }}** fue aprobado.
+El pago del pedido **{{ $pedido->numero_comprobante ?? ('#' . $pedido->id) }}** fue aprobado.
 @else
 # ✅ ¡Tu pago fue confirmado, {{ explode(' ', $pedido->nombre_contacto ?? 'Cliente')[0] }}!
 
-Tu pedido **#{{ $pedido->id }}** fue pagado correctamente. Ya lo estamos preparando.
+Tu pedido fue pagado correctamente. Ya lo estamos preparando.
 @endif
 
+**N° de comprobante:** `{{ $pedido->numero_comprobante ?? ('#' . $pedido->id) }}`
 **Fecha:** {{ $pedido->created_at->format('d/m/Y H:i') }}
+
+@if(!$esAdmin && $pedido->tipo_entrega === 'retiro_sucursal')
+@component('mail::panel')
+**🎫 Código de retiro: {{ $pedido->numero_comprobante ?? ('#' . $pedido->id) }}**
+
+Presentá este código en la sucursal para retirar tu pedido. Podés mostrarlo desde tu celular o imprimirlo.
+@endcomponent
+
+@endif
 
 ---
 
@@ -45,6 +55,12 @@ Tu pedido **#{{ $pedido->id }}** fue pagado correctamente. Ya lo estamos prepara
 @endif
 @if($pedido->envio->referencias)
 **Referencias:** {{ $pedido->envio->referencias }}
+@endif
+
+@if(!$esAdmin)
+@component('mail::panel')
+Tu pedido será entregado en un plazo de **48 a 72 horas hábiles** desde la confirmación del pago.
+@endcomponent
 @endif
 @else
 **Sucursal:** {{ optional($pedido->sucursal)->nombre ?? 'Sucursal seleccionada' }}

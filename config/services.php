@@ -48,7 +48,9 @@ return [
         'web_domicilio' => env('PALJET_WEB_DOMICILIO', 'José Coronel 379'),
         'web_cond_vta' => env('PALJET_WEB_COND_VTA', 129),  // MERCADO PAGO
         // Stock: unidades iguales o menores a este valor activan "últimas unidades"
-        'stock_alerta' => env('PALJET_STOCK_ALERTA', 3),
+        'stock_alerta'      => env('PALJET_STOCK_ALERTA', 3),
+        'contenedor_art_id' => env('PALJET_CONTENEDOR_ART_ID', 12441),
+        'cache_ttl'    => env('PALJET_CACHE_TTL', 600),
         // Email que recibe copia del pedido web desde Paljet
         'notif_email'  => env('FERRETERIA_PEDIDOS_EMAIL'),
         'condiciones' => [

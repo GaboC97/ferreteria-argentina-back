@@ -245,10 +245,10 @@ class PedidoService
             ]);
 
             return [
-                'ok'           => true,
-                'pedido_id'    => $pedidoId,
+                'ok'          => true,
+                'pedido_id'   => $pedidoId,
                 'access_token' => $accessToken,
-                'vence_en'     => $venceEn->toIso8601String(),
+                'vence_en'    => $venceEn->toIso8601String(),
             ];
         });
     }

@@ -12,6 +12,8 @@ use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\PaljetCatalogoController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\AdminController;
+use App\Http\Controllers\MetricasController;
+use App\Http\Controllers\PaljetArticulosOcultosController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\DireccionController;
 use App\Http\Controllers\ContactoController;
@@ -27,6 +29,8 @@ Route::middleware('throttle:5,1')->group(function () {
     Route::post('/verify-email', [AuthController::class, 'verifyEmailOtp']);
     Route::post('/resend-verification', [AuthController::class, 'resendEmailOtp']);
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 });
 
 // =====================
@@ -53,6 +57,7 @@ Route::post('/postulaciones', [PostulacionController::class, 'store']);
 
 Route::get('/catalogo', [PaljetCatalogoController::class, 'index']);
 Route::get('/catalogo/categorias', [PaljetCatalogoController::class, 'categorias']);
+Route::get('/catalogo/marcas', [PaljetCatalogoController::class, 'marcas']);
 // Admin: artículos sin stock en Playa Unión (debe ir antes del wildcard {paljetId})
 Route::middleware(['auth:sanctum', 'admin'])->get('/catalogo/sin-stock', [PaljetCatalogoController::class, 'sinStock']);
 Route::get('/catalogo/{codigo}/imagen', [PaljetCatalogoController::class, 'imagen']);
@@ -92,6 +97,14 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     // Dashboard y estadísticas
     Route::get('/dashboard', [AdminController::class, 'dashboard']);
 
+    // Métricas
+    Route::prefix('metricas')->group(function () {
+        Route::get('/kpis', [MetricasController::class, 'kpis']);
+        Route::get('/ingresos-mensuales', [MetricasController::class, 'ingresosMensuales']);
+        Route::get('/pedidos-por-estado', [MetricasController::class, 'pedidosPorEstado']);
+        Route::get('/comparativa-anual', [MetricasController::class, 'comparativaAnual']);
+    });
+
     // Gestión de productos
     Route::get('/productos', [AdminController::class, 'productos']);
     Route::get('/productos/stats', [AdminController::class, 'productosStats']);
@@ -108,6 +121,11 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     // Configuración
     Route::get('/configuracion', [AdminController::class, 'configuracion']);
     Route::put('/configuracion', [AdminController::class, 'actualizarConfiguracion']);
+
+    // Artículos ocultos del catálogo Paljet
+    Route::get('/catalogo/ocultos', [PaljetArticulosOcultosController::class, 'index']);
+    Route::post('/catalogo/ocultos', [PaljetArticulosOcultosController::class, 'store']);
+    Route::delete('/catalogo/ocultos/{paljetArtId}', [PaljetArticulosOcultosController::class, 'destroy']);
 
     // Gestión de sucursales
     Route::post('/sucursales', [AdminController::class, 'crearSucursal']);

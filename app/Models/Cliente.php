@@ -32,6 +32,7 @@ class Cliente extends Authenticatable
         'direccion_provincia',
         'direccion_codigo_postal',
         'activo',
+        'paljet_cliente_id',
     ];
 
     protected $hidden = [
