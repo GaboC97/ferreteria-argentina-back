@@ -24,6 +24,8 @@ use App\Services\PaljetService;
 // =====================
 // AUTH (PÚBLICAS) - Rate limited para prevenir brute force
 // =====================
+Route::post('/check-email', [AuthController::class, 'checkEmail']);
+
 Route::middleware('throttle:5,1')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/verify-email', [AuthController::class, 'verifyEmailOtp']);

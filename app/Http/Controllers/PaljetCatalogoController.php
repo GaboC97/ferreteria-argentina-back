@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CatalogoWeb;
 use App\Services\PaljetService;
 use Illuminate\Http\Request;
 
@@ -80,11 +81,21 @@ class PaljetCatalogoController extends Controller
     }
 
     /**
-     * Obtener un artículo por su ID de Paljet.
+     * Obtener un artículo por ID numérico de Paljet o por código string.
      */
-    public function show(int $paljetId)
+    public function show(string $paljetId)
     {
-        $data = $this->paljet->getArticulo($paljetId);
+        if (!is_numeric($paljetId)) {
+            $articulo = CatalogoWeb::where('codigo', $paljetId)->first();
+
+            if (!$articulo) {
+                return response()->json(['error' => 'Artículo no encontrado'], 404);
+            }
+
+            $paljetId = $articulo->paljet_art_id;
+        }
+
+        $data = $this->paljet->getArticulo((int) $paljetId);
 
         if (isset($data['error'])) {
             return response()->json(['error' => $data['error']], $data['status'] ?? 500);

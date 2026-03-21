@@ -13,7 +13,23 @@
       "Bash(mysql:*)",
       "Bash(php artisan make:migration:*)",
       "Bash(node:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(php:*)",
+      "Bash(grep:*)",
+      "Bash(node -e \":*)",
+      "Read(//d/laragon/bin/php/**)",
+      "Bash(composer require predis/predis --no-interaction)",
+      "Bash(where redis-server)",
+      "Bash(tasklist)",
+      "Bash(composer remove predis/predis)",
+      "Bash(tar -tzf d:/laragon/www/ferreteria-backend/u289613730.20260311223916.tar.gz)",
+      "Read(//d/tmp/**)",
+      "Bash(tar -xzf d:/laragon/www/ferreteria-backend/u289613730.20260311223916.tar.gz --wildcards \"*/.env\")",
+      "WebFetch(domain:186.189.244.25)",
+      "Bash(php -r \":*)",
+      "Bash(git -C /d/laragon/www/ferreteria-backend log --oneline -10)",
+      "WebFetch(domain:docs.globalgetnet.com)",
+      "Bash(git add .claude/settings.local.json app/Console/Commands/PaljetRefreshCatalogCache.php app/Console/Kernel.php app/Http/Controllers/AuthController.php app/Http/Controllers/PaljetCatalogoController.php routes/api.php app/Console/Commands/PaljetCacheImages.php database/schema/)"
     ]
   }
 }

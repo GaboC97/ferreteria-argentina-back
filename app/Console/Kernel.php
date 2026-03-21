@@ -10,12 +10,18 @@ class Kernel extends ConsoleKernel
     /**
      * Define the application's command schedule.
      */
-    protected function schedule(Schedule $schedule): void
-    {
-        $schedule->command('catalogo:sync')->everyFifteenMinutes();
-        $schedule->command('paljet:sync-articulos --size=200 --pages=5 --start=0')->hourly();
-        $schedule->command('reservas:expirar')->everyMinute();
-    }
+protected function schedule(Schedule $schedule): void
+{
+    $schedule->command('catalogo:sync')->everyFifteenMinutes();
+
+    $schedule->command('paljet:sync-articulos --size=200 --pages=5 --start=0')->hourly();
+
+    $schedule->command('reservas:expirar')->everyMinute();
+
+    $schedule->command('paljet:refresh-catalog-cache')->everyThirtyMinutes();
+
+    $schedule->command('paljet:cache-images')->hourly();
+}
 
     /**
      * Register the commands for the application.

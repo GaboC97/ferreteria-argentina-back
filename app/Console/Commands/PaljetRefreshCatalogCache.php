@@ -13,14 +13,62 @@ class PaljetRefreshCatalogCache extends Command
 
     public function handle(PaljetService $paljet): int
     {
-        $this->info('Actualizando caché del catálogo Paljet...');
+        $inicio = microtime(true);
 
-        $catalog = $paljet->warmupCatalogCache();
+        $this->info('========================================');
+        $this->info('INICIANDO REFRESH DE CATALOGO PALJET');
+        $this->info('========================================');
 
-        $this->info('Listo. Artículos publicables cacheados: ' . count($catalog));
+        $this->info('Descargando catálogo desde ERP...');
 
-        $this->info('Actualizando caché de imágenes...');
-        Artisan::call('paljet:cache-images');
+        try {
+
+            $catalog = $paljet->warmupCatalogCache();
+
+        } catch (\Throwable $e) {
+
+            $this->error('Error al actualizar catálogo: ' . $e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $total = count($catalog);
+
+        $this->info("Catálogo cacheado correctamente.");
+        $this->line("Artículos publicables: {$total}");
+
+        if ($total === 0) {
+            $this->warn('El catálogo está vacío. Verificá conexión con Paljet.');
+        }
+
+        $this->newLine();
+
+        $this->info('========================================');
+        $this->info('INICIANDO CACHE DE IMAGENES');
+        $this->info('========================================');
+
+        $exitCode = Artisan::call('paljet:cache-images');
+
+        $this->line(Artisan::output());
+
+        if ($exitCode !== 0) {
+            $this->error('El comando de cache de imágenes terminó con errores.');
+        }
+
+        $tiempo = round(microtime(true) - $inicio, 2);
+        $memoria = round(memory_get_peak_usage(true) / 1024 / 1024, 2);
+
+        $this->newLine();
+
+        $this->info('========================================');
+        $this->info('RESUMEN');
+        $this->info('========================================');
+
+        $this->line("Productos en catálogo: {$total}");
+        $this->line("Tiempo total ejecución: {$tiempo} segundos");
+        $this->line("Memoria máxima usada: {$memoria} MB");
+
+        $this->info('Proceso finalizado correctamente.');
 
         return self::SUCCESS;
     }
