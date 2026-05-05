@@ -29,7 +29,19 @@
       "Bash(php -r \":*)",
       "Bash(git -C /d/laragon/www/ferreteria-backend log --oneline -10)",
       "WebFetch(domain:docs.globalgetnet.com)",
-      "Bash(git add .claude/settings.local.json app/Console/Commands/PaljetRefreshCatalogCache.php app/Console/Kernel.php app/Http/Controllers/AuthController.php app/Http/Controllers/PaljetCatalogoController.php routes/api.php app/Console/Commands/PaljetCacheImages.php database/schema/)"
+      "Bash(git add .claude/settings.local.json app/Console/Commands/PaljetRefreshCatalogCache.php app/Console/Kernel.php app/Http/Controllers/AuthController.php app/Http/Controllers/PaljetCatalogoController.php routes/api.php app/Console/Commands/PaljetCacheImages.php database/schema/)",
+      "Bash(git commit:*)",
+      "Bash(git push origin dev)",
+      "Bash(d:/laragon/www/ferreteria-backend/.env:*)",
+      "WebSearch",
+      "WebFetch(domain:groups.google.com)",
+      "WebFetch(domain:predocs.globalgetnet.com)",
+      "WebFetch(domain:developer.getnetworld.com)",
+      "WebFetch(domain:pre.developer.getnetworld.com)",
+      "WebFetch(domain:developers-sdk-documentation-site-santander.preprod.geopagos.com)",
+      "WebFetch(domain:www.pre.globalgetnet.com)",
+      "Bash(mysql -u root ferreteria -e \"SELECT codigo, descripcion, familia_nombre, stock FROM catalogo_web WHERE marca_nombre IS NULL OR marca_nombre = '''' ORDER BY descripcion;\")",
+      "Bash(mysql -u root -proot ferreteria -e \"SELECT codigo, descripcion, familia_nombre, stock FROM catalogo_web WHERE marca_nombre IS NULL OR marca_nombre = '''' ORDER BY descripcion;\")"
     ]
   }
 }

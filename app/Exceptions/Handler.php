@@ -6,6 +6,7 @@ use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Throwable;
 
@@ -34,6 +35,12 @@ class Handler extends ExceptionHandler
 
     public function render($request, Throwable $e)
     {
+        if ($e instanceof ThrottleRequestsException) {
+            return response()->json([
+                'message' => 'Demasiados intentos. Esperá un momento e intentá de nuevo.',
+            ], 429, $e->getHeaders());
+        }
+
         // Dejar que Laravel maneje correctamente las excepciones conocidas
         // (validación, auth, not found, etc.) en todos los entornos
         if ($e instanceof ValidationException ||

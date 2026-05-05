@@ -71,7 +71,7 @@ class AuthController extends Controller
                 // Fallo silencioso: continuar registro sin Paljet
                 Log::warning('Paljet - Fallo silencioso durante registro, se omite lookup', [
                     'error' => $e->getMessage(),
-                    'email' => $data['email'],
+                    'email' => substr($data['email'], 0, 3) . '***',
                 ]);
                 $paljetClienteId = null;
                 $paljetData      = null;
@@ -311,53 +311,6 @@ class AuthController extends Controller
             'cliente' => $cliente,
         ])->withCookie($this->authCookie($token));
     }
-
-public function updatePerfil(Request $request): JsonResponse
-{
-    $user = $request->user();
-
-    $cliente = Cliente::where('user_id', $user->id)->first();
-
-    if (!$cliente) {
-        return response()->json([
-            'message' => 'No hay cliente asociado a este usuario'
-        ], 404);
-    }
-
-    $data = $request->validate([
-        'nombre' => ['sometimes','string','max:120'],
-        'apellido' => ['sometimes','string','max:120'],
-        'telefono' => ['sometimes','string','max:40'],
-        'dni' => ['sometimes','string','max:20'],
-
-        'cuit' => ['nullable','string','max:20'],
-        'condicion_iva' => ['nullable','string','max:80'],
-        'nombre_empresa' => ['nullable','string','max:160'],
-
-        // Dirección (en tabla clientes)
-        'direccion_calle' => ['nullable','string','max:160'],
-        'direccion_numero' => ['nullable','string','max:20'],
-        'direccion_piso' => ['nullable','string','max:20'],
-        'direccion_depto' => ['nullable','string','max:20'],
-        'direccion_localidad' => ['nullable','string','max:80'],
-        'direccion_provincia' => ['nullable','string','max:80'],
-        'direccion_codigo_postal' => ['nullable','string','max:20'],
-    ]);
-
-    // 🔥 Update cliente
-    $cliente->update($data);
-
-    // 🔥 Sync nombre en tabla users si cambia
-    if (isset($data['nombre'])) {
-        $user->name = $data['nombre'];
-        $user->save();
-    }
-
-    return response()->json([
-        'message' => 'Perfil actualizado correctamente',
-        'cliente' => $cliente->fresh(),
-    ]);
-}
 
 
     public function forgotPassword(Request $request): JsonResponse

@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Mail;
 use App\Models\Pedido;
 
-Route::get('/__ping', fn () => 'OK WEB '.app()->version());
+Route::get('/__ping', fn () => 'OK WEB ' . app()->version());
 
 Route::get('/test-mail-all', function () {
     $pedido = Pedido::with(['items', 'envio', 'pagos', 'sucursal', 'cliente'])

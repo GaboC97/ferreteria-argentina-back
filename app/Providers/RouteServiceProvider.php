@@ -24,8 +24,13 @@ class RouteServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Rutas públicas (catálogo, productos, marcas, etc.) — sin límite práctico
+        // Las rutas de auth tienen su propio throttle:5,1 definido en api.php
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+            if ($request->user()) {
+                return Limit::none();
+            }
+            return Limit::perMinute(1000)->by($request->ip());
         });
 
         $this->routes(function () {

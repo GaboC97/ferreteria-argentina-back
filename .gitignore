@@ -17,6 +17,34 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+
+# Local agent/context files
+/.codex-context/
+/.claude/settings.local.json
+
+# Local debug, audit and one-off maintenance scripts
+/AUDIT.md
+/debug_*.php
+/gen_*.php
+/check_marcas*.php
+/asignar_categorias.php
+/export_categorias.php
+/fix_contenedor_precio_prod.php
+/mp_cuotas_check.php
+/paljet_*debug*.php
+/paljet_*_debug.php
+/paljet_debug.php
+/paljet_search_contenedor.php
+/paljet_contenedor_debug.php
+/paljet_contenedor_precio.php
+/paljet_cond_vta.php
+
+# Generated reports, dumps, backups and local test artifacts
+/*.sql
+/*.tar.gz
+/*.zip
+/*.pdf
+/listado_categorias.md
 paljet_test.php
 responsev2api.txt
 *.test.php

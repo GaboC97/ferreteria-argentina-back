@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\CatalogoWeb;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -34,8 +35,8 @@ class Categoria extends Model
         return $this->hasMany(Categoria::class, 'categoria_padre_id');
     }
 
-    public function productos(): HasMany
+    public function articulos(): HasMany
     {
-        return $this->hasMany(Producto::class, 'categoria_id');
+        return $this->hasMany(CatalogoWeb::class, 'categoria_web_id');
     }
 }

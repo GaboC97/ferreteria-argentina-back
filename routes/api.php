@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\Route;
 
 use App\Http\Controllers\PedidoController;
-use App\Http\Controllers\MercadoPagoController;
+use App\Http\Controllers\GetnetController;
 use App\Http\Controllers\WebhookController;
 use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\MarcaController;
@@ -18,8 +18,17 @@ use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\DireccionController;
 use App\Http\Controllers\ContactoController;
 use App\Http\Controllers\PostulacionController;
-use App\Models\Pedido;
-use App\Services\PaljetService;
+use App\Http\Controllers\ProductoPlayaUnionController;
+
+// =====================
+// PRODUCTOS PLAYA UNIÓN (protegido por contraseña simple)
+// =====================
+Route::post('/playa-union/login', [ProductoPlayaUnionController::class, 'login']);
+
+Route::middleware('productos.pass')->prefix('playa-union')->group(function () {
+    Route::get('/productos', [ProductoPlayaUnionController::class, 'index']);
+    Route::post('/productos/fotos', [ProductoPlayaUnionController::class, 'storeFotos']);
+});
 
 // =====================
 // AUTH (PÚBLICAS) - Rate limited para prevenir brute force
@@ -78,9 +87,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::post('/pedidos/{id}/comprobante', [PedidoController::class, 'subirComprobante']);
 
-Route::post('/pagos/mercadopago/preferencia', [MercadoPagoController::class, 'crearPreferencia']);
-Route::get('/pagos/mercadopago/estado', [MercadoPagoController::class, 'estado']);
-Route::any('/webhooks/mercadopago', [WebhookController::class, 'mercadoPago']);
+Route::post('/pagos/getnet/sesion', [GetnetController::class, 'crearSesion']);
+Route::get('/pagos/getnet/estado', [GetnetController::class, 'estado']);
+Route::any('/webhooks/getnet', [WebhookController::class, 'getnet']);
 
 // =====================
 // DIRECCIONES (PROTEGIDAS)
@@ -118,6 +127,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('/pedidos/{id}/rechazar-devolucion', [PedidoController::class, 'rechazarDevolucion']);
     // Gestión de clientes
     Route::get('/clientes', [AdminController::class, 'clientes']);
+    Route::get('/clientes/stats', [AdminController::class, 'clientesStats']);
     Route::put('/clientes/{id}', [AdminController::class, 'actualizarCliente']);
 
     // Configuración
@@ -133,6 +143,36 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('/sucursales', [AdminController::class, 'crearSucursal']);
     Route::put('/sucursales/{id}', [AdminController::class, 'actualizarSucursal']);
     Route::delete('/sucursales/{id}', [AdminController::class, 'eliminarSucursal']);
+
+    // Export sin stock
+    Route::get('/catalogo/sin-stock/export', function () {
+        $productos = \Illuminate\Support\Facades\DB::table('catalogo_web')
+            ->where('stock', '<=', 0)
+            ->orderBy('marca_nombre')
+            ->orderBy('descripcion')
+            ->get(['codigo', 'descripcion', 'marca_nombre', 'familia_nombre', 'precio', 'stock']);
+
+        $fecha = now()->format('Y-m-d');
+
+        $csv = "\xEF\xBB\xBF"; // BOM UTF-8 para que Excel lo abra bien
+        $csv .= "Código;Descripción;Marca;Familia;Precio;Stock\n";
+
+        foreach ($productos as $p) {
+            $csv .= implode(';', [
+                '"' . str_replace('"', '""', $p->codigo        ?? '') . '"',
+                '"' . str_replace('"', '""', $p->descripcion   ?? '') . '"',
+                '"' . str_replace('"', '""', $p->marca_nombre  ?? '') . '"',
+                '"' . str_replace('"', '""', $p->familia_nombre ?? '') . '"',
+                number_format((float) $p->precio, 2, ',', '.'),
+                (int) $p->stock,
+            ]) . "\n";
+        }
+
+        return response($csv, 200, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"sin_stock_{$fecha}.csv\"",
+        ]);
+    });
 });
 
 // Gestión de pedidos (admin) - fuera del prefix para mantener /api/pedidos/{id}
@@ -143,25 +183,3 @@ Route::middleware(['auth:sanctum', 'admin'])->group(function () {
     Route::get('/pedidos/{id}/comprobante', [PedidoController::class, 'verComprobante']);
 });
 
-
-
-
-
-
-Route::post('/__test/paljet/{pedido}', function ($pedidoId) {
-
-    // 🔒 SOLO LOCAL
-    if (!app()->environment('local')) {
-        abort(403, 'Endpoint solo disponible en entorno local');
-    }
-
-    $pedido = Pedido::findOrFail($pedidoId);
-
-    $paljetId = app(PaljetService::class)
-        ->generarFacturaDePedido($pedido);
-
-    return response()->json([
-        'pedido_id_local'   => $pedido->id,
-        'paljet_pedido_id'  => $paljetId,
-    ]);
-});

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Categoria;
 use App\Models\CatalogoWeb;
 use App\Models\PaljetArticuloOculto;
 use Illuminate\Support\Facades\Cache;
@@ -64,31 +65,7 @@ class PaljetService
         }
 
         try {
-            // Si la tabla local tiene datos, servir desde DB
             return $this->getArticulosFromDB($filtros, $page, $size, $categoriaIds);
-
-            if ($categoriaIds !== null) {
-                $allDescendants = [];
-                foreach ($categoriaIds as $catId) {
-                    $allDescendants = array_merge($allDescendants, $this->getCategoryDescendantIds($catId));
-                }
-                $allDescendants = array_unique($allDescendants);
-                $filtered = array_values(array_filter(
-                    $filtered,
-                    fn($a) => isset($a['categoria']['id']) && in_array($a['categoria']['id'], $allDescendants)
-                ));
-            }
-
-            $total   = count($filtered);
-            $content = array_slice($filtered, $page * $size, $size);
-
-            return [
-                'content'       => array_values($content),
-                'totalElements' => $total,
-                'totalPages'    => (int) ceil($total / max($size, 1)),
-                'number'        => $page,
-                'size'          => $size,
-            ];
         } catch (\Throwable $e) {
             Log::error('Paljet WS - Excepción al obtener artículos', [
                 'message' => $e->getMessage(),
@@ -108,7 +85,11 @@ class PaljetService
             ->where('catalogo_web.precio', '>', 0);
 
         if (!empty($filtros['descripcion'])) {
-            $query->where('catalogo_web.descripcion', 'like', '%' . $filtros['descripcion'] . '%');
+            $q = '%' . $filtros['descripcion'] . '%';
+            $query->where(function ($sub) use ($q) {
+                $sub->where('catalogo_web.descripcion', 'like', $q)
+                    ->orWhere('catalogo_web.marca_nombre', 'like', $q);
+            });
         }
         if (!empty($filtros['desc_mod_med'])) {
             $query->where('catalogo_web.desc_mod_med', 'like', '%' . $filtros['desc_mod_med'] . '%');
@@ -135,20 +116,35 @@ class PaljetService
         }
 
         if ($categoriaIds !== null) {
-            $allDescendants = [];
+            $allIds = [];
             foreach ($categoriaIds as $catId) {
-                $allDescendants = array_merge($allDescendants, $this->getCategoryDescendantIds($catId));
+                $allIds[] = $catId;
+                $childIds = Categoria::where('categoria_padre_id', $catId)->pluck('id')->all();
+                $allIds   = array_merge($allIds, $childIds);
             }
-            $query->whereIn('catalogo_web.categoria_id', array_unique($allDescendants));
+            $query->whereIn('catalogo_web.categoria_web_id', array_unique($allIds));
         }
 
-        // Sorting
+        // Sorting — para precio usa COALESCE(precio_oferta, precio) para respetar el precio de oferta.
+        // 'nuevo' / 'reciente' ordenan por fecha de primera aparición en el catálogo web
+        // y filtran agotados: (admin_existencia=0 OR stock>0) — para la sección "Últimas novedades" del home.
         $sort = $filtros['sort'] ?? 'relevancia';
+
+        if ($sort === 'nuevo' || $sort === 'reciente') {
+            $query->where(function ($sub) {
+                $sub->where('catalogo_web.admin_existencia', false)
+                    ->orWhere('catalogo_web.stock', '>', 0);
+            });
+        }
+
         match ($sort) {
-            'precio_asc'  => $query->orderBy('catalogo_web.precio', 'asc'),
-            'precio_desc' => $query->orderBy('catalogo_web.precio', 'desc'),
-            'oferta'      => $query->orderByRaw('paljet_ofertas.paljet_art_id IS NOT NULL DESC'),
-            default       => $query->orderBy('catalogo_web.ventas_count', 'desc')
+            'precio_asc'        => $query->orderByRaw('COALESCE(paljet_ofertas.precio_oferta, catalogo_web.precio) ASC'),
+            'precio_desc'       => $query->orderByRaw('COALESCE(paljet_ofertas.precio_oferta, catalogo_web.precio) DESC'),
+            'oferta'            => $query->orderByRaw('paljet_ofertas.paljet_art_id IS NOT NULL DESC'),
+            'nuevo', 'reciente' => $query->orderBy('catalogo_web.first_seen_at', 'desc')
+                ->orderBy('catalogo_web.paljet_art_id', 'desc'),
+            'nombre'            => $query->orderBy('catalogo_web.descripcion', 'asc'),
+            default             => $query->orderBy('catalogo_web.ventas_count', 'desc')
                 ->orderBy('catalogo_web.paljet_art_id', 'asc'),
         };
 
@@ -166,6 +162,8 @@ class PaljetService
             'catalogo_web.categoria_id',
             'catalogo_web.categoria_nombre',
             'catalogo_web.precio',
+            'catalogo_web.precio_neto',
+            'catalogo_web.iva_alicuota',
             'catalogo_web.admin_existencia',
             'catalogo_web.stock',
             'catalogo_web.ultimas_unidades',
@@ -197,10 +195,23 @@ return [
     private function catalogoWebToArray($row): array
     {
         $precioOriginal = (float) $row->precio;
+        $precioNeto     = (float) ($row->precio_neto ?? 0);
+        $ivaAlicuota    = (float) ($row->iva_alicuota ?? 0);
         $precioOferta   = isset($row->precio_oferta) && $row->precio_oferta > 0
             ? (float) $row->precio_oferta
             : null;
         $enOferta = $precioOferta !== null;
+
+        // Si hay oferta, derivamos su neto manteniendo la misma proporción IVA del producto.
+        // Si no hay neto guardado, fallback a la fórmula con la alícuota.
+        $precioOfertaNeto = null;
+        if ($precioOferta !== null) {
+            if ($precioOriginal > 0 && $precioNeto > 0) {
+                $precioOfertaNeto = round($precioOferta * ($precioNeto / $precioOriginal), 2);
+            } elseif ($ivaAlicuota > 0) {
+                $precioOfertaNeto = round($precioOferta / (1 + $ivaAlicuota / 100), 2);
+            }
+        }
 
         return [
             'id'               => (int) $row->paljet_art_id,
@@ -220,10 +231,14 @@ return [
             'categoria'        => $row->categoria_id
                 ? ['id' => (int) $row->categoria_id, 'nombre' => $row->categoria_nombre]
                 : null,
-            'precio'           => $precioOriginal,
-            'precio_original'  => $precioOriginal,
-            'precio_oferta'    => $precioOferta,
-            'en_oferta'        => $enOferta,
+            'precio'              => $precioOriginal,
+            'precio_neto'         => $precioNeto,
+            'iva_alicuota'        => $ivaAlicuota,
+            'precio_original'     => $precioOriginal,
+            'precio_original_neto' => $precioNeto,
+            'precio_oferta'       => $precioOferta,
+            'precio_oferta_neto'  => $precioOfertaNeto,
+            'en_oferta'           => $enOferta,
             'listas'           => is_string($row->listas_json)
                 ? json_decode($row->listas_json, true) ?? []
                 : ($row->listas_json ?? []),
@@ -499,66 +514,56 @@ return [
 
     /**
      * Árbol de categorías cacheado.
-     * Si la tabla local existe, lee categorías activas desde DB (sin llamar al ERP).
+     * Lee desde la tabla local `categorias` (padres → hijos).
+     * Solo incluye categorías con al menos un artículo activo en catalogo_web.
      */
     public function getCategorias(): array
     {
         $ttl      = (int) config('services.paljet.cache_ttl', 600);
-        $cacheKey = "paljet_categorias_{$this->depId}";
+        $cacheKey = 'categorias_web_tree';
 
         return Cache::remember($cacheKey, $ttl, function () {
             // IDs de categorías con artículos activos
-            if (CatalogoWeb::query()->count() > 0) {
-                $activeCatIds = CatalogoWeb::where('precio', '>', 0)
-                    ->whereNotNull('categoria_id')
-                    ->pluck('categoria_id')
-                    ->unique()
-                    ->flip()
-                    ->all();
-            } else {
-                $articulos    = $this->getCachedFullCatalog();
-                $activeCatIds = [];
-                foreach ($articulos as $art) {
-                    $cat = $art['categoria'] ?? null;
-                    if (isset($cat['id'])) {
-                        $activeCatIds[$cat['id']] = true;
+            $activeCatIds = CatalogoWeb::where('precio', '>', 0)
+                ->whereNotNull('categoria_web_id')
+                ->pluck('categoria_web_id')
+                ->unique()
+                ->flip()
+                ->all();
+
+            $padres = Categoria::whereNull('categoria_padre_id')
+                ->where('activo', true)
+                ->orderBy('nombre')
+                ->with(['hijas' => fn ($q) => $q->where('activo', true)->orderBy('nombre')])
+                ->get();
+
+            $tree = [];
+            foreach ($padres as $padre) {
+                $hijos = [];
+                foreach ($padre->hijas as $hija) {
+                    if (isset($activeCatIds[$hija->id])) {
+                        $hijos[] = [
+                            'id'     => $hija->id,
+                            'nombre' => $hija->nombre,
+                            'slug'   => $hija->slug,
+                            'hijos'  => [],
+                        ];
                     }
+                }
+
+                // Incluir padre si tiene hijos activos o artículos propios
+                if (count($hijos) > 0 || isset($activeCatIds[$padre->id])) {
+                    $tree[] = [
+                        'id'     => $padre->id,
+                        'nombre' => $padre->nombre,
+                        'slug'   => $padre->slug,
+                        'hijos'  => $hijos,
+                    ];
                 }
             }
 
-            // Árbol completo desde Paljet (solo estructura de árbol, no artículos)
-            $catResponse = $this->client()->get("{$this->baseUrl}/categorias");
-
-            if (!$catResponse->successful()) {
-                return ['error' => 'Error al obtener categorías', 'status' => $catResponse->status()];
-            }
-
-            $tree      = $catResponse->json();
-            $rootHijos = (is_array($tree) && isset($tree[0]['hijos'])) ? $tree[0]['hijos'] : [];
-
-            return $this->pruneCategoriasTree($rootHijos, $activeCatIds);
+            return $tree;
         });
-    }
-
-    /**
-     * Filtra recursivamente el árbol de categorías de Paljet.
-     */
-    protected function pruneCategoriasTree(array $nodes, array $activeCatIds): array
-    {
-        $result = [];
-        foreach ($nodes as $node) {
-            $id    = $node['art_cat_id'];
-            $hijos = $this->pruneCategoriasTree($node['hijos'] ?? [], $activeCatIds);
-
-            if (isset($activeCatIds[$id]) || count($hijos) > 0) {
-                $result[] = [
-                    'id'     => $id,
-                    'nombre' => $node['nombre'],
-                    'hijos'  => $hijos,
-                ];
-            }
-        }
-        return $result;
     }
 
     /**
@@ -756,7 +761,7 @@ return [
         // =========================
         // 8. Enviar a Paljet
         // =========================
-        Log::info('Paljet WS - Body crearCliente', ['rz' => $body['rz'], 'nom_fantasia' => $body['nom_fantasia'], 'datos_recibidos' => array_diff_key($datos, ['password' => true])]);
+        Log::info('Paljet WS - Body crearCliente', ['rz' => $body['rz'], 'nom_fantasia' => $body['nom_fantasia']]);
         try {
             $response = $this->client()->post("{$this->baseUrl}/clientes", $body);
 
@@ -1052,12 +1057,6 @@ return [
         // =========================
         // 2. Buscar / Crear cliente
         // =========================
-        Log::info('DEBUG PEDIDO PARA PALJET', [
-            'pedido_id' => $pedido->id,
-            'cuit_contacto' => $pedido->cuit_contacto,
-            'condicion_iva' => $pedido->condicion_iva_contacto,
-            'email' => $pedido->email_contacto,
-        ]);
         $paljetCliId = $this->buscarClientePorCuitODni(
             $pedido->cuit_contacto,
             $pedido->dni_contacto
@@ -1315,19 +1314,81 @@ return [
             $content = $data['content'] ?? [];
 
             if (empty($content)) {
-                return ['error' => 'Artículo no encontrado', 'status' => 404];
+                return $this->getArticuloFromDB($artId);
             }
 
             $articulo = $content[0];
             $stock    = $this->getStockDeposito((int) $articulo['id']);
-            return $this->enrichArticulo($articulo, $stock);
+            $articulo = $this->enrichArticulo($articulo, $stock);
+            return $this->enrichOferta($articulo, (int) $articulo['id']);
         } catch (\Throwable $e) {
             Log::error('Paljet WS - Excepción al obtener artículo', [
                 'art_id'  => $artId,
                 'message' => $e->getMessage(),
             ]);
-            return ['error' => 'No se pudo cargar el producto. Intentá de nuevo en unos instantes.'];
+            return $this->getArticuloFromDB($artId);
         }
+    }
+
+    /**
+     * Fallback: arma la respuesta de detalle de artículo desde catalogo_web
+     * cuando la API de Paljet no devuelve el artículo.
+     */
+    private function getArticuloFromDB(int $artId): array
+    {
+        $row = \Illuminate\Support\Facades\DB::table('catalogo_web')
+            ->where('paljet_art_id', $artId)
+            ->first();
+
+        if (!$row) {
+            return ['error' => 'Artículo no encontrado', 'status' => 404];
+        }
+
+        $listas = [];
+        if (!empty($row->listas_json)) {
+            $listas = json_decode($row->listas_json, true) ?? [];
+        }
+
+        $precioOriginal = (float) $row->precio;
+        $precioNeto     = (float) ($row->precio_neto ?? 0);
+        $ivaAlicuota    = (float) ($row->iva_alicuota ?? 0);
+
+        $oferta = \Illuminate\Support\Facades\DB::table('paljet_ofertas')
+            ->where('paljet_art_id', $row->paljet_art_id)
+            ->first();
+
+        $precioOferta     = ($oferta && $oferta->precio_oferta > 0) ? (float) $oferta->precio_oferta : null;
+        $precioOfertaNeto = null;
+        if ($precioOferta !== null) {
+            if ($precioOriginal > 0 && $precioNeto > 0) {
+                $precioOfertaNeto = round($precioOferta * ($precioNeto / $precioOriginal), 2);
+            } elseif ($ivaAlicuota > 0) {
+                $precioOfertaNeto = round($precioOferta / (1 + $ivaAlicuota / 100), 2);
+            }
+        }
+
+        return [
+            'id'                   => $row->paljet_art_id,
+            'codigo'               => $row->codigo,
+            'descripcion'          => $row->descripcion,
+            'desc_mod_med'         => $row->desc_mod_med ?? null,
+            'marca'                => $row->marca_nombre  ? ['nombre' => $row->marca_nombre]  : null,
+            'familia'              => $row->familia_nombre ? ['nombre' => $row->familia_nombre] : null,
+            'precio'               => $precioOriginal,
+            'precio_neto'          => $precioNeto,
+            'iva_alicuota'         => $ivaAlicuota,
+            'precio_original'      => $precioOriginal,
+            'precio_original_neto' => $precioNeto,
+            'precio_oferta'        => $precioOferta,
+            'precio_oferta_neto'   => $precioOfertaNeto,
+            'en_oferta'            => $precioOferta !== null,
+            'listas'               => $listas,
+            'stock_disponible'     => (int) $row->stock,
+            'ultimas_unidades'     => $row->ultimas_unidades ?? false,
+            'imagen_url'           => $row->imagen_url ?? url("/api/catalogo/{$row->codigo}/imagen"),
+            'tiene_imagen'         => (bool) ($row->tiene_imagen ?? false),
+            'admin_existencia'     => (bool) ($row->admin_existencia ?? false),
+        ];
     }
 
     /**
@@ -1343,6 +1404,40 @@ return [
      * Determina si un artículo es publicable en la web.
      * Requisitos: stock > 0 (si Paljet gestiona existencia) y precio final > 0.
      */
+    /**
+     * Enriquece un artículo con datos de oferta desde paljet_ofertas.
+     * Solo para el endpoint de detalle — el listado ya hace JOIN directo en el query.
+     */
+    private function enrichOferta(array $articulo, int $artId): array
+    {
+        $oferta = \Illuminate\Support\Facades\DB::table('paljet_ofertas')
+            ->where('paljet_art_id', $artId)
+            ->first();
+
+        $precioOferta = ($oferta && $oferta->precio_oferta > 0)
+            ? (float) $oferta->precio_oferta
+            : null;
+
+        $precioOfertaNeto = null;
+        if ($precioOferta !== null) {
+            $precio     = (float) ($articulo['precio'] ?? 0);
+            $precioNeto = (float) ($articulo['precio_neto'] ?? 0);
+            $iva        = (float) ($articulo['iva_alicuota'] ?? 0);
+
+            if ($precio > 0 && $precioNeto > 0) {
+                $precioOfertaNeto = round($precioOferta * ($precioNeto / $precio), 2);
+            } elseif ($iva > 0) {
+                $precioOfertaNeto = round($precioOferta / (1 + $iva / 100), 2);
+            }
+        }
+
+        $articulo['precio_oferta']      = $precioOferta;
+        $articulo['precio_oferta_neto'] = $precioOfertaNeto;
+        $articulo['en_oferta']          = $precioOferta !== null;
+
+        return $articulo;
+    }
+
     private function articuloPublicable(array $articulo): bool
     {
         // Solo se filtra por precio: debe tener precio final > 0 en alguna lista de precios.
@@ -1383,6 +1478,33 @@ return [
             $articulo['stock_disponible'] = null;
             $articulo['ultimas_unidades'] = false;
         }
+
+        // Precios planos — misma forma que el listado.
+        // Se extrae pr_venta (sin IVA) de la primera lista con pr_final > 0.
+        $precio     = 0.0;
+        $precioNeto = 0.0;
+        foreach ($articulo['listas'] ?? [] as $lista) {
+            if (isset($lista['pr_final']) && (float) $lista['pr_final'] > 0) {
+                $precio     = (float) $lista['pr_final'];
+                $precioNeto = (float) ($lista['pr_venta'] ?? 0);
+                break;
+            }
+        }
+        if ($precio === 0.0 && isset($articulo['pr_final'])) {
+            $precio = (float) $articulo['pr_final'];
+        }
+        $ivaAlicuota = (float) ($articulo['impuestos'][0]['impuesto']['alicuota'] ?? 0);
+
+        $articulo['precio']               = $precio;
+        $articulo['precio_neto']          = $precioNeto;
+        $articulo['iva_alicuota']         = $ivaAlicuota;
+        $articulo['precio_original']      = $precio;
+        $articulo['precio_original_neto'] = $precioNeto;
+        // precio_oferta y precio_oferta_neto los resuelve el caller (getArticulo)
+        // que sí tiene acceso a la tabla paljet_ofertas.
+        $articulo['precio_oferta']        = $articulo['precio_oferta']       ?? null;
+        $articulo['precio_oferta_neto']   = $articulo['precio_oferta_neto']  ?? null;
+        $articulo['en_oferta']            = $articulo['en_oferta']           ?? false;
 
         return $articulo;
     }
@@ -1444,66 +1566,41 @@ return [
     }
 
     /**
-     * Devuelve todos los artículos publicados en web cuyo stock en dep_id=8 es 0.
-     * Solo incluye artículos con admin_existencia=true (Paljet gestiona su stock).
-     * Paginación en PHP sobre el array filtrado.
+     * Devuelve todos los artículos del catálogo web (Playa Unión) con stock <= 0.
+     * Lee directo de catalogo_web para no depender de admin_existencia de Paljet.
      */
-    public function getArticulosSinStock(int $page = 0, int $size = 100): array
+    public function getArticulosSinStock(int $page = 0, int $size = 100, ?string $search = null): array
     {
         try {
-            // 1. Traer hasta 500 artículos publicados (cubre el catálogo actual ~231)
-            $response = $this->client()->get("{$this->baseUrl}/articulos", [
-                'dep_id'       => $this->depId,
-                'publica_web'  => 'true',
-                'solo_activos' => 'true',
-                'size'         => 500,
-                'page'         => 0,
-            ]);
+            $query = \Illuminate\Support\Facades\DB::table('catalogo_web')
+                ->where('stock', '<=', 0)
+                ->orderBy('marca_nombre')
+                ->orderBy('descripcion');
 
-            if (!$response->successful()) {
-                Log::error('Paljet WS - Error al obtener artículos sin stock', [
-                    'status' => $response->status(),
-                    'body'   => $response->body(),
-                ]);
-                return ['error' => 'No se pudieron cargar los productos. Intentá de nuevo en unos instantes.', 'status' => $response->status()];
+            if ($search !== null && $search !== '') {
+                $like = '%' . $search . '%';
+                $query->where(function ($q) use ($like) {
+                    $q->where('descripcion',   'like', $like)
+                      ->orWhere('codigo',       'like', $like)
+                      ->orWhere('marca_nombre', 'like', $like);
+                });
             }
 
-            $articulos = $response->json()['content'] ?? [];
+            $total     = $query->count();
+            $paginated = $query->offset($page * $size)->limit($size)
+                ->get(['paljet_art_id', 'codigo', 'descripcion', 'marca_nombre', 'familia_nombre', 'stock']);
 
-            // 2. Mapa de stock dep_id=8 en una sola llamada
-            $stockMap = $this->getStockMapDeposito();
-
-            // 3. Filtrar: gestiona existencia Y stock = 0 (o ausente del mapa = nunca tuvo)
-            $sinStock = array_values(array_filter($articulos, function ($art) use ($stockMap) {
-                if (!($art['admin_existencia'] ?? false)) {
-                    return false;
-                }
-                $artId      = (int) ($art['id'] ?? 0);
-                $disponible = $stockMap[$artId] ?? 0.0;
-                return (float) $disponible === 0.0;
-            }));
-
-            // 4. Dar forma al response (campos mínimos requeridos por el frontend)
-            $sinStock = array_map(function ($art) {
-                $marca   = $art['marca']   ?? null;
-                $familia = $art['familia'] ?? null;
-
-                return [
-                    'art_id'          => (int) $art['id'],
-                    'codigo'          => $art['codigo']      ?? null,
-                    'descripcion'     => $art['descripcion'] ?? null,
-                    'marca'           => is_array($marca)   ? ($marca['nombre']   ?? null) : $marca,
-                    'familia'         => is_array($familia) ? ($familia['nombre'] ?? null) : $familia,
-                    'stock_disponible' => 0,
-                ];
-            }, $sinStock);
-
-            // 5. Paginación en PHP
-            $total     = count($sinStock);
-            $paginated = array_slice($sinStock, $page * $size, $size);
+            $content = $paginated->map(fn ($r) => [
+                'art_id'           => $r->paljet_art_id,
+                'codigo'           => $r->codigo,
+                'descripcion'      => $r->descripcion,
+                'marca'            => $r->marca_nombre,
+                'familia'          => $r->familia_nombre,
+                'stock_disponible' => (int) $r->stock,
+            ])->values()->all();
 
             return [
-                'content'       => $paginated,
+                'content'       => $content,
                 'totalElements' => $total,
                 'totalPages'    => (int) ceil($total / max($size, 1)),
                 'number'        => $page,

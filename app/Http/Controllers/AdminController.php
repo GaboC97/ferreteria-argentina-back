@@ -4,8 +4,11 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use App\Models\CatalogoWeb;
 use App\Models\Cliente;
+use App\Models\Pedido;
 use App\Models\Producto;
 use App\Models\Sucursal;
 use App\Models\Configuracion;
@@ -61,9 +64,62 @@ class AdminController extends Controller
         $pageRaw = (int) $request->query('page', 1);
         $page    = $pageRaw > 0 ? $pageRaw - 1 : 0; // normalizar a base-0
 
+        // Filtro sin_stock: artículos publicados con stock = 0 en dep principal
+        if ($request->query('sin_stock') == '1') {
+            $ofertaMap = Cache::remember('oferta_map', 300, fn () => PaljetOferta::all()->keyBy('paljet_art_id'));
+
+            $query = CatalogoWeb::where('admin_existencia', true)->where('stock', 0);
+
+            if ($search = $request->query('search')) {
+                $query->where('descripcion', 'like', "%{$search}%");
+            }
+            if ($marca = $request->query('marca')) {
+                $query->where('marca_id', (int) $marca);
+            }
+            if ($familia = $request->query('familia')) {
+                $query->where('familia_id', (int) $familia);
+            }
+            if ($categoriaId = $request->query('categoria_id')) {
+                $query->where('categoria_id', (int) $categoriaId);
+            }
+
+            $total     = $query->count();
+            $articulos = $query->skip($page * $size)->take($size)->get();
+
+            $content = $articulos->map(function ($art) use ($ofertaMap) {
+                $oferta = $ofertaMap->get($art->paljet_art_id);
+                return [
+                    'id'               => $art->paljet_art_id,
+                    'codigo'           => $art->codigo,
+                    'ean'              => $art->ean,
+                    'descripcion'      => $art->descripcion,
+                    'desc_cliente'     => $art->desc_cliente,
+                    'desc_mod_med'     => $art->desc_mod_med,
+                    'marca'            => $art->marca_id ? ['id' => $art->marca_id, 'nombre' => $art->marca_nombre] : null,
+                    'familia'          => $art->familia_id ? ['id' => $art->familia_id, 'nombre' => $art->familia_nombre] : null,
+                    'categoria'        => $art->categoria_id ? ['id' => $art->categoria_id, 'nombre' => $art->categoria_nombre] : null,
+                    'precio'           => $art->precio,
+                    'admin_existencia' => $art->admin_existencia,
+                    'stock_disponible' => 0,
+                    'imagen_url'       => $art->imagen_url,
+                    'listas'           => $art->listas_json ?? [],
+                    'en_oferta'        => $oferta !== null,
+                    'precio_oferta'    => $oferta?->precio_oferta,
+                ];
+            })->values()->toArray();
+
+            return response()->json([
+                'content'       => $content,
+                'totalElements' => $total,
+                'totalPages'    => (int) ceil($total / $size),
+                'number'        => $page,
+                'size'          => $size,
+            ]);
+        }
+
         // Filtro en_oferta: se resuelve desde catalogo_web + paljet_ofertas (ERP no soporta este filtro)
         if ($request->query('en_oferta') == '1') {
-            $ofertas = PaljetOferta::all()->keyBy('paljet_art_id');
+            $ofertas = Cache::remember('oferta_map', 300, fn () => PaljetOferta::all()->keyBy('paljet_art_id'));
             $ids     = $ofertas->keys()->toArray();
 
             if (empty($ids)) {
@@ -125,7 +181,9 @@ class AdminController extends Controller
             ]);
         }
 
-        // Sin filtro en_oferta: consulta normal al ERP
+        // Sin filtros especiales: consulta normal desde catalogo_web
+        // publica_web: '1' (default) = solo publicados, '0' = todos los del catálogo local
+        $pubWeb  = $request->query('publica_web', '1') === '0' ? null : true;
         $paljet  = app(PaljetService::class);
         $filtros = array_filter([
             'page'        => $page,
@@ -135,7 +193,7 @@ class AdminController extends Controller
             'familia'     => $request->query('familia'),
             'categoria'   => $request->query('categoria_id'),
             'solo_activos'=> $request->query('activo', 'true'),
-            'publica_web' => 'true',
+            'publica_web' => $pubWeb ? 'true' : null,
             'include'     => 'listas',
         ], fn($v) => !is_null($v) && $v !== '');
 
@@ -147,7 +205,7 @@ class AdminController extends Controller
 
         // Enriquecer cada artículo con en_oferta y precio_oferta desde la tabla local
         if (!empty($data['content'])) {
-            $ofertaMap = PaljetOferta::all()->keyBy('paljet_art_id');
+            $ofertaMap = Cache::remember('oferta_map', 300, fn () => PaljetOferta::all()->keyBy('paljet_art_id'));
             $data['content'] = array_map(function ($art) use ($ofertaMap) {
                 $oferta = $ofertaMap->get((int) $art['id']);
                 $art['en_oferta']     = $oferta !== null;
@@ -328,37 +386,110 @@ class AdminController extends Controller
     }
 
     // =====================
+    // ESTADÍSTICAS DE CLIENTES
+    // =====================
+
+    public function clientesStats()
+    {
+        $total = Cliente::count();
+
+        $newThisMonth = Cliente::whereYear('created_at', now()->year)
+            ->whereMonth('created_at', now()->month)
+            ->count();
+
+        $active = Cliente::whereHas('pedidos', function ($q) {
+            $q->where('created_at', '>=', now()->subDays(90));
+        })->count();
+
+        $avgSpentResult = DB::selectOne(
+            'SELECT AVG(total_cliente) as avg FROM (
+                SELECT SUM(total_final) as total_cliente
+                FROM pedidos
+                WHERE cliente_id IS NOT NULL
+                  AND estado IN (?, ?)
+                GROUP BY cliente_id
+            ) as por_cliente',
+            ['en_proceso', 'entregado']
+        );
+        $avgSpent = $avgSpentResult->avg ?? 0;
+
+        return response()->json([
+            'total'        => $total,
+            'newThisMonth' => $newThisMonth,
+            'active'       => $active,
+            'avgSpent'     => round((float) $avgSpent, 2),
+        ]);
+    }
+
+    // =====================
     // CONFIGURACION
     // =====================
 
+    private function configDefaults(): array
+    {
+        return [
+            'general' => [
+                'siteName'        => 'Ferretería Argentina',
+                'contactEmail'    => 'contacto@ferreteria.com',
+                'contactPhone'    => '+54 11 1234-5678',
+                'siteDescription' => 'Tu ferretería de confianza',
+                'currency'        => 'ARS',
+                'timezone'        => 'America/Argentina/Buenos_Aires',
+            ],
+            'store' => [
+                'minStock'        => 10,
+                'productsPerPage' => 12,
+                'shippingCost'    => 1000,
+                'freeShippingFrom'=> 50000,
+                'enableRetiro'    => true,
+                'enableEnvio'     => true,
+            ],
+        ];
+    }
+
     public function configuracion()
     {
-        $configs = Configuracion::all()->pluck('valor', 'clave');
+        $defaults = $this->configDefaults();
 
-        return response()->json(['data' => $configs], 200);
+        $stored = Configuracion::whereIn('clave', ['general', 'store'])
+            ->get()
+            ->pluck('valor', 'clave');
+
+        $general = isset($stored['general'])
+            ? array_merge($defaults['general'], json_decode($stored['general'], true) ?? [])
+            : $defaults['general'];
+
+        $store = isset($stored['store'])
+            ? array_merge($defaults['store'], json_decode($stored['store'], true) ?? [])
+            : $defaults['store'];
+
+        return response()->json([
+            'general' => $general,
+            'store'   => $store,
+        ]);
     }
 
     public function actualizarConfiguracion(Request $request)
     {
         $data = $request->validate([
-            'configs'          => ['required', 'array'],
-            'configs.*.clave'  => ['required', 'string', 'max:100'],
-            'configs.*.valor'  => ['nullable', 'string', 'max:2000'],
+            'section'  => ['required', 'string', 'in:general,store'],
+            'settings' => ['required', 'array'],
         ]);
 
-        foreach ($data['configs'] as $item) {
-            Configuracion::updateOrCreate(
-                ['clave' => $item['clave']],
-                ['valor' => $item['valor'] ?? '']
-            );
-        }
+        $defaults = $this->configDefaults();
+        $section  = $data['section'];
 
-        $configs = Configuracion::all()->pluck('valor', 'clave');
+        // Mergear con lo que ya está guardado para no perder otros keys
+        $existing = Configuracion::where('clave', $section)->value('valor');
+        $current  = $existing ? (json_decode($existing, true) ?? []) : [];
+        $merged   = array_merge($defaults[$section], $current, $data['settings']);
 
-        return response()->json([
-            'message' => 'Configuración actualizada correctamente',
-            'data'    => $configs,
-        ], 200);
+        Configuracion::updateOrCreate(
+            ['clave' => $section],
+            ['valor' => json_encode($merged)]
+        );
+
+        return response()->json(['ok' => true]);
     }
 
     // =====================

@@ -75,6 +75,18 @@ class PedidoController extends Controller
             $query->where('cliente_id', $request->cliente_id);
         }
 
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('nombre_contacto', 'like', "%{$search}%")
+                  ->orWhere('email_contacto', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('pedido_id')) {
+            $query->where('id', (int) $request->pedido_id);
+        }
+
         $query->orderBy('created_at', 'desc');
 
         $perPage = min((int) $request->get('per_page', 15), 100);
@@ -371,7 +383,7 @@ class PedidoController extends Controller
     public function subirComprobante(Request $request, int $pedidoId)
     {
         $request->validate([
-            'comprobante'  => ['required', 'file', 'mimes:jpg,jpeg,png,pdf,webp', 'max:5120'],
+            'comprobante'  => ['required', 'file', 'mimes:jpg,jpeg,png,pdf,webp', 'mimetypes:image/jpeg,image/png,image/webp,application/pdf', 'max:5120'],
             'access_token' => ['nullable', 'string', 'uuid'],
         ]);
 
@@ -485,17 +497,17 @@ class PedidoController extends Controller
                 abort(409, 'Este pedido no puede devolverse en su estado actual.');
             }
 
-            // 3) Refund en MercadoPago (si el pago fue por MP)
-            $refund = ['mp_refund' => false, 'detalle' => null];
+            // 3) Refund en Getnet (si el pago fue por Getnet)
+            $refund = ['refund' => false, 'detalle' => null];
 
             $pago = Pago::where('pedido_id', $pedidoId)
                 ->where('estado', 'aprobado')
-                ->whereNotNull('mp_payment_id')
+                ->whereNotNull('getnet_payment_id')
                 ->lockForUpdate()
                 ->first();
 
-            if ($pago && $pago->mp_payment_id) {
-                $refund = $this->pagoService->procesarRefundMP($pago);
+            if ($pago && $pago->getnet_payment_id) {
+                $refund = $this->pagoService->procesarRefundGetnet($pago);
             }
 
             // 4) Traer reservas confirmadas de productos
@@ -629,21 +641,15 @@ class PedidoController extends Controller
             return response()->json(['error' => 'Este pedido no tiene comprobante adjunto.'], 404);
         }
 
-        if (!Storage::disk('local')->exists($pedido->comprobante_path)) {
-            return response()->json(['error' => 'Archivo no encontrado en el servidor.'], 404);
-        }
-
         $disk = Storage::disk('local');
 
         if (!$disk->exists($pedido->comprobante_path)) {
-            return response()->json(['error' => 'Archivo no encontrado'], 404);
+            return response()->json(['error' => 'Archivo no encontrado en el servidor.'], 404);
         }
 
         $contenido = $disk->get($pedido->comprobante_path);
 
-        $mime = \Illuminate\Support\Facades\File::mimeType(
-            storage_path('app/' . $pedido->comprobante_path)
-        );
+        $mime = $disk->mimeType($pedido->comprobante_path) ?: 'application/octet-stream';
 
         return response($contenido, 200)
             ->header('Content-Type', $mime)

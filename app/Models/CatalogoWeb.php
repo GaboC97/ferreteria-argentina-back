@@ -25,6 +25,8 @@ class CatalogoWeb extends Model
         'categoria_id',
         'categoria_nombre',
         'precio',
+        'precio_neto',
+        'iva_alicuota',
         'admin_existencia',
         'stock',
         'ultimas_unidades',
@@ -33,6 +35,7 @@ class CatalogoWeb extends Model
         'listas_json',
         'raw_json',
         'synced_at',
+        'first_seen_at',
         'ventas_count',
     ];
 
@@ -42,6 +45,8 @@ class CatalogoWeb extends Model
         'familia_id'      => 'integer',
         'categoria_id'    => 'integer',
         'precio'          => 'float',
+        'precio_neto'     => 'float',
+        'iva_alicuota'    => 'float',
         'stock'           => 'float',
         'admin_existencia' => 'boolean',
         'ultimas_unidades' => 'boolean',
@@ -49,5 +54,6 @@ class CatalogoWeb extends Model
         'listas_json'     => 'array',
         'raw_json'        => 'array',
         'synced_at'       => 'datetime',
+        'first_seen_at'   => 'datetime',
     ];
 }

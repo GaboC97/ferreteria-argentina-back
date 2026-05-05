@@ -43,7 +43,7 @@ class NotificacionService
                         ->send(new PedidoConfirmadoCliente($pedidoFresh));
                 } catch (\Throwable $e) {
                     Log::error("Error enviando mail cliente pedido {$pedido->id}", [
-                        'email' => $clienteEmail,
+                        'email' => substr($clienteEmail, 0, 3) . '***',
                         'error' => $e->getMessage(),
                     ]);
 
@@ -74,7 +74,7 @@ class NotificacionService
                         ->send(new PedidoConfirmadoAdmin($pedidoFresh));
                 } catch (\Throwable $e) {
                     Log::error("Error enviando mail admin pedido {$pedido->id}", [
-                        'email' => $adminEmail,
+                        'email' => substr($adminEmail, 0, 3) . '***',
                         'error' => $e->getMessage(),
                     ]);
 
@@ -123,7 +123,7 @@ class NotificacionService
                         ->send(new ContenedorReservaConfirmadaCliente($pedidoFresh, $reservaFresh, $productoNombre));
                 } catch (\Throwable $e) {
                     Log::error("Error enviando mail cliente reserva contenedor {$reserva->id}", [
-                        'email' => $clienteEmail,
+                        'email' => substr($clienteEmail, 0, 3) . '***',
                         'error' => $e->getMessage(),
                     ]);
 
@@ -154,7 +154,7 @@ class NotificacionService
                         ->send(new ContenedorReservaConfirmadaAdmin($pedidoFresh, $reservaFresh, $productoNombre));
                 } catch (\Throwable $e) {
                     Log::error("Error enviando mail admin reserva contenedor {$reserva->id}", [
-                        'email' => $adminEmail,
+                        'email' => substr($adminEmail, 0, 3) . '***',
                         'error' => $e->getMessage(),
                     ]);
 

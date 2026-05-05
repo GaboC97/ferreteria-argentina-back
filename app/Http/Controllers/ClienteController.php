@@ -51,9 +51,11 @@ class ClienteController extends Controller
 
     return DB::transaction(function () use ($data, $cliente, $user) {
 
-        // 1) Update cliente (solo lo que corresponde)
+        // 1) Campos del cliente (personales + direccion_* legacy en clientes table)
         $clienteData = collect($data)->only([
-            'nombre','apellido','telefono','dni','cuit','condicion_iva','nombre_empresa'
+            'nombre', 'apellido', 'telefono', 'dni', 'cuit', 'condicion_iva', 'nombre_empresa',
+            'direccion_calle', 'direccion_numero', 'direccion_piso', 'direccion_depto',
+            'direccion_localidad', 'direccion_provincia', 'direccion_codigo_postal',
         ])->toArray();
 
         if (!empty($clienteData)) {
@@ -66,44 +68,37 @@ class ClienteController extends Controller
             $user->save();
         }
 
-        // 2) Guardar/actualizar dirección principal en direcciones
-        $direccionLegacy = collect($data)->only([
-            'direccion_calle',
-            'direccion_numero',
-            'direccion_piso',
-            'direccion_depto',
-            'direccion_localidad',
-            'direccion_provincia',
-            'direccion_codigo_postal',
-        ])->toArray();
+        // 2) Guardar/actualizar dirección principal en tabla direcciones
+        $calle    = $data['direccion_calle'] ?? null;
+        $ciudad   = $data['direccion_localidad'] ?? null;
+        $provincia = $data['direccion_provincia'] ?? null;
 
-        $tieneDireccion = collect($direccionLegacy)->filter(function ($v) {
-            return $v !== null && $v !== '';
-        })->isNotEmpty();
-
-        if ($tieneDireccion) {
-            // map legacy -> tabla direcciones
+        // Solo persistir si hay al menos calle + ciudad + provincia (columnas NOT NULL)
+        if ($calle && $ciudad && $provincia) {
             $direccionData = [
-                'alias' => 'Principal',
-                'nombre_recibe' => $cliente->nombre ?: null,
+                'alias'           => 'Principal',
+                'nombre_recibe'   => $cliente->nombre ?: null,
                 'telefono_recibe' => $cliente->telefono ?: null,
-                'calle' => $direccionLegacy['direccion_calle'] ?? null,
-                'numero' => $direccionLegacy['direccion_numero'] ?? null,
-                'piso' => $direccionLegacy['direccion_piso'] ?? null,
-                'depto' => $direccionLegacy['direccion_depto'] ?? null,
-                'ciudad' => $direccionLegacy['direccion_localidad'] ?? null,
-                'provincia' => $direccionLegacy['direccion_provincia'] ?? null,
-                'codigo_postal' => $direccionLegacy['direccion_codigo_postal'] ?? null,
-                'referencias' => null,
-                'es_principal' => true,
+                'calle'           => $calle,
+                'numero'          => $data['direccion_numero'] ?? '',
+                'piso'            => $data['direccion_piso'] ?? null,
+                'depto'           => $data['direccion_depto'] ?? null,
+                'ciudad'          => $ciudad,
+                'provincia'       => $provincia,
+                'codigo_postal'   => $data['direccion_codigo_postal'] ?? null,
+                'referencias'     => null,
+                'es_principal'    => true,
             ];
 
-            // asegurar que solo haya una principal
-            Direccion::where('cliente_id', $cliente->id)->update(['es_principal' => false]);
-
+            // Buscar la principal ANTES de tocar el flag
             $principal = Direccion::where('cliente_id', $cliente->id)
                 ->where('es_principal', true)
                 ->first();
+
+            // Marcar el resto como no-principales
+            Direccion::where('cliente_id', $cliente->id)
+                ->where('id', '!=', $principal?->id ?? 0)
+                ->update(['es_principal' => false]);
 
             if ($principal) {
                 $principal->update($direccionData);
@@ -113,14 +108,14 @@ class ClienteController extends Controller
             }
         }
 
-        // Respuesta: cliente + dirección principal (útil para el front)
+        // Respuesta: cliente + dirección principal
         $direccionPrincipal = Direccion::where('cliente_id', $cliente->id)
             ->where('es_principal', true)
             ->first();
 
         return response()->json([
-            'message' => 'Perfil actualizado correctamente',
-            'cliente' => $cliente->fresh(),
+            'message'             => 'Perfil actualizado correctamente',
+            'cliente'             => $cliente->fresh(),
             'direccion_principal' => $direccionPrincipal,
         ]);
     });

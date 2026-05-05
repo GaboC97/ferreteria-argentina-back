@@ -21,17 +21,18 @@ class PaljetCatalogoController extends Controller
     public function index(Request $request)
     {
         // Soporte multi-marca: ?marca=BOSCH&marca=FMT  o  ?marcas=BOSCH,FMT
-        $marcasRaw = $request->query('marcas');
-        $marcaArr  = $request->query('marca');
-        if ($marcasRaw) {
-            $marcas = array_filter(array_map('trim', explode(',', $marcasRaw)));
-        } elseif (is_array($marcaArr)) {
-            $marcas = array_filter($marcaArr);
-        } elseif ($marcaArr) {
-            $marcas = [$marcaArr];
+        // Soporta ?marca=BOSCH,MAKITA o ?marca[]=BOSCH&marca[]=MAKITA o ?marcas=BOSCH,MAKITA
+        $marcasRaw = $request->query('marcas') ?? $request->query('marca');
+        if (is_array($marcasRaw)) {
+            $marcas = array_values(array_filter(array_map('trim', $marcasRaw)));
+        } elseif ($marcasRaw) {
+            $marcas = array_values(array_filter(array_map('trim', explode(',', $marcasRaw))));
         } else {
             $marcas = [];
         }
+
+        // Acepta ?orden=precio_asc (frontend) o ?sort=precio_asc (legado)
+        $orden = $request->query('orden') ?? $request->query('sort', 'relevancia');
 
         $filtros = array_filter([
             'page'        => $request->query('page', 0),
@@ -44,7 +45,7 @@ class PaljetCatalogoController extends Controller
             'familia'     => $request->query('familia'),
             'categoria'   => $request->query('categoria'),
             'en_oferta'   => $request->boolean('en_oferta') ? true : null,
-            'sort'        => $request->query('sort', 'relevancia'),
+            'sort'        => $orden,
         ], fn($v) => !is_null($v) && $v !== '');
 
         $data = $this->paljet->getArticulos($filtros);
@@ -110,10 +111,11 @@ class PaljetCatalogoController extends Controller
      */
     public function sinStock(Request $request)
     {
-        $page = (int) $request->query('page', 0);
-        $size = (int) $request->query('size', 100);
+        $page   = (int) $request->query('page', 0);
+        $size   = (int) $request->query('size', 100);
+        $search = trim($request->query('search', ''));
 
-        $data = $this->paljet->getArticulosSinStock($page, $size);
+        $data = $this->paljet->getArticulosSinStock($page, $size, $search ?: null);
 
         if (isset($data['error'])) {
             return response()->json(['error' => $data['error']], $data['status'] ?? 500);

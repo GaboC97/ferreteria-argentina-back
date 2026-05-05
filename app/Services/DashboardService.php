@@ -124,7 +124,7 @@ class DashboardService
 
     private function calculateTrend($current, $previous): float|int
     {
-        if ($previous == 0) {
+        if ((float) $previous === 0.0) {
             return $current > 0 ? 100 : 0;
         }
 

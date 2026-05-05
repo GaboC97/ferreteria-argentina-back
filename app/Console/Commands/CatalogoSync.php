@@ -67,11 +67,13 @@ class CatalogoSync extends Command
                 continue;
             }
 
-            // Precio desde listas
-            $precio = 0.0;
+            // Precio desde listas (pr_final = con IVA, pr_venta = sin IVA)
+            $precio     = 0.0;
+            $precioNeto = 0.0;
             foreach ($art['listas'] ?? [] as $lista) {
                 if (isset($lista['pr_final']) && (float) $lista['pr_final'] > 0) {
-                    $precio = (float) $lista['pr_final'];
+                    $precio     = (float) $lista['pr_final'];
+                    $precioNeto = (float) ($lista['pr_venta'] ?? 0);
                     break;
                 }
             }
@@ -84,6 +86,9 @@ class CatalogoSync extends Command
                 $omitidos++;
                 continue;
             }
+
+            // Alícuota IVA del primer impuesto (en general IVGR)
+            $alicuota = (float) ($art['impuestos'][0]['impuesto']['alicuota'] ?? 0);
 
             // Stock
             // El contenedor se trata como sin restricción de stock (admin_existencia=false)
@@ -125,6 +130,8 @@ class CatalogoSync extends Command
                 'categoria_id'    => $categoria ? (int) ($categoria['id'] ?? 0) : null,
                 'categoria_nombre' => $categoria ? ($categoria['nombre'] ?? null) : null,
                 'precio'          => $precio,
+                'precio_neto'     => $precioNeto,
+                'iva_alicuota'    => $alicuota,
                 'admin_existencia' => $adminExistencia,
                 'stock'           => $stock,
                 'ultimas_unidades' => $ultimasUnidades,
@@ -132,11 +139,15 @@ class CatalogoSync extends Command
                 'listas_json'     => json_encode($listas),
                 'raw_json'        => json_encode($art),
                 'synced_at'       => now()->toDateTimeString(),
+                'first_seen_at'   => now()->toDateTimeString(),
             ];
 
-            // Flush en lotes de 200
+            // Flush en lotes de 200.
+            // first_seen_at se setea solo en INSERT y se preserva en UPDATE
+            // (no se incluye en la lista de columnas a actualizar).
             if (count($batch) >= 200) {
-                CatalogoWeb::upsert($batch, ['paljet_art_id'], array_keys($batch[0]));
+                $updateCols = array_values(array_diff(array_keys($batch[0]), ['first_seen_at']));
+                CatalogoWeb::upsert($batch, ['paljet_art_id'], $updateCols);
                 $upserts += count($batch);
                 $batch = [];
             }
@@ -144,7 +155,8 @@ class CatalogoSync extends Command
 
         // Último lote
         if (!empty($batch)) {
-            CatalogoWeb::upsert($batch, ['paljet_art_id'], array_keys($batch[0]));
+            $updateCols = array_values(array_diff(array_keys($batch[0]), ['first_seen_at']));
+            CatalogoWeb::upsert($batch, ['paljet_art_id'], $updateCols);
             $upserts += count($batch);
         }
 
